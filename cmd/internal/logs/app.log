@@ -1,0 +1,4 @@
+{"level":"info","msg":"Logging to: ../internal/logs/app.log","time":"2024-04-19T21:57:59+04:00"}
+{"level":"info","msg":"Using existing token","time":"2024-04-19T21:58:00+04:00"}
+{"level":"info","msg":"Response from CHRobinson: , Status Code: 201","time":"2024-04-19T21:58:01+04:00"}
+{"level":"info","msg":"Milestone update sent successfully","time":"2024-04-19T21:58:01+04:00"}

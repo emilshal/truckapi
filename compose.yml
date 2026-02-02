@@ -1,0 +1,15 @@
+version: "3.8"
+
+services:
+  truckapi:
+    image: truckapi-final
+    build: .
+    ports:
+      - "8081:8081"
+    volumes:
+      - ./public:/app/public
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
