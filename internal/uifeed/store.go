@@ -86,8 +86,8 @@ func (s *Store) List(source Source, page, pageSize int) Page {
 	if pageSize <= 0 {
 		pageSize = 10
 	}
-	if pageSize > 50 {
-		pageSize = 50
+	if pageSize > 200 {
+		pageSize = 200
 	}
 
 	s.mu.RLock()

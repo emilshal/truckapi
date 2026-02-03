@@ -2,10 +2,8 @@
   const state = {
     source: "CHROBINSON",
     page: 1,
-    pageSize: 10,
+    pageSize: 100,
     total: 0,
-    pollMs: 1500,
-    pollTimer: null,
   };
 
   const els = {
@@ -108,19 +106,6 @@
     }
   }
 
-  function startPolling() {
-    stopPolling();
-    state.pollTimer = setInterval(() => {
-      // Auto-refresh only on the newest page to avoid surprising jumps while paging old data.
-      if (state.page === 1) render();
-    }, state.pollMs);
-  }
-
-  function stopPolling() {
-    if (state.pollTimer) clearInterval(state.pollTimer);
-    state.pollTimer = null;
-  }
-
   els.btnCHROB.addEventListener("click", () => setActiveSource("CHROBINSON"));
   els.btnTS.addEventListener("click", () => setActiveSource("TRUCKSTOP"));
 
@@ -135,6 +120,5 @@
   });
 
   setActiveSource("CHROBINSON");
-  startPolling();
+  render();
 })();
-

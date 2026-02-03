@@ -1,7 +1,6 @@
 package chrobrunner
 
 import (
-	"context"
 	"fmt"
 	"sort"
 	"strconv"
@@ -35,9 +34,6 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 		originNameCounts   = map[string]int{}
 		destNameCounts     = map[string]int{}
 	)
-
-	loaderClient := loader.NewAPIClientFromEnv(nil)
-	postPool := loader.PostPool{Client: loaderClient}
 
 	for _, loc := range locations {
 		lat, err := parseFloatField(loc.Latitude)
@@ -151,37 +147,14 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 				}
 			}
 
-			if len(pageOrders) > 0 {
-				postStart := time.Now()
-				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-				ok, errs := postPool.PostAll(ctx, pageOrders)
-				cancel()
-
-				totalPosted += ok
-				if len(errs) > 0 {
-					for _, postErr := range errs {
-						log.WithError(postErr).Error("Failed to post order to Loader API")
-					}
+			// Prototype-test UI mode: do not POST to Loader API.
+			// Instead, load the in-memory feed so the UI can page through results.
+			if feed != nil {
+				for _, o := range pageOrders {
+					feed.Add(o)
+					totalEnqueued++
 				}
-
-				log.WithFields(log.Fields{
-					"pageIndex":    pageIndex,
-					"pageOrders":   len(pageOrders),
-					"posted_ok":    ok,
-					"posted_fail":  len(errs),
-					"duration_ms":  time.Since(postStart).Milliseconds(),
-					"location_lat": lat,
-					"location_lng": lng,
-				}).Info("CHRob page post summary")
 			}
-
-			// Prototype UI feed is disabled on `prototype-test`.
-			// if feed != nil {
-			// 	for _, o := range pageOrders {
-			// 		feed.Add(o)
-			// 		totalEnqueued++
-			// 	}
-			// }
 
 			// Stop when we've exhausted the result set.
 			if len(searchResponse.Results) < searchRequest.PageSize {
