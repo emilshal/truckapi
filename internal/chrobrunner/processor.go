@@ -1,7 +1,9 @@
 package chrobrunner
 
 import (
+	"encoding/hex"
 	"fmt"
+	"hash/fnv"
 	"sort"
 	"strconv"
 	"strings"
@@ -13,6 +15,47 @@ import (
 
 	log "github.com/sirupsen/logrus"
 )
+
+func chrobDedupKey(shipment chrobinson.ShipmentInfo, order loader.LoaderOrder) string {
+	// Prefer loadNumber when present.
+	if shipment.LoadNumber != 0 {
+		return fmt.Sprintf("loadNumber:%d", shipment.LoadNumber)
+	}
+
+	// Fallback: hash a stable subset of mapped fields.
+	// This avoids infinite paging when the API ignores pageIndex and repeats page 0.
+	h := fnv.New64a()
+	write := func(s string) {
+		_, _ = h.Write([]byte(s))
+		_, _ = h.Write([]byte{0})
+	}
+	write(order.Source)
+	write(order.PickupLocation)
+	write(order.DeliveryLocation)
+	write(order.PickupDate)
+	write(order.DeliveryDate)
+	write(order.OriginalTruckSize)
+	write(order.SuggestedTruckSize)
+	write(order.TruckCompanyName)
+	write(fmt.Sprintf("%.3f", order.EstimatedMiles))
+	write(fmt.Sprintf("%.3f", order.Weight))
+
+	sum := make([]byte, 8)
+	binaryPutUint64(sum, h.Sum64())
+	return "fallback:" + hex.EncodeToString(sum)
+}
+
+func binaryPutUint64(dst []byte, v uint64) {
+	_ = dst[7]
+	dst[0] = byte(v >> 56)
+	dst[1] = byte(v >> 48)
+	dst[2] = byte(v >> 40)
+	dst[3] = byte(v >> 32)
+	dst[4] = byte(v >> 24)
+	dst[5] = byte(v >> 16)
+	dst[6] = byte(v >> 8)
+	dst[7] = byte(v)
+}
 
 func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error {
 	locations, err := db.FetchLoaderLocations("TRUCKSTOP")
@@ -81,9 +124,20 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 			},
 		}
 
-		seenLoadNumbers := make(map[int]struct{}, 256)
+		seenKeys := make(map[string]struct{}, 512)
 		pageIndex := 0
+		const maxPagesPerLocation = 50
 		for {
+			if pageIndex >= maxPagesPerLocation {
+				log.WithFields(log.Fields{
+					"lat":       lat,
+					"lng":       lng,
+					"pageIndex": pageIndex,
+					"pageSize":  baseRequest.PageSize,
+				}).Warn("CHRob paging hit max page cap; stopping pagination for location")
+				break
+			}
+
 			searchRequest := baseRequest
 			searchRequest.PageIndex = pageIndex
 
@@ -125,15 +179,15 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 			totalShipments += len(searchResponse.Results)
 
 			var pageOrders []loader.LoaderOrder
+			var addedKeys int
 			for _, shipment := range searchResponse.Results {
-				if shipment.LoadNumber != 0 {
-					if _, exists := seenLoadNumbers[shipment.LoadNumber]; exists {
-						continue
-					}
-					seenLoadNumbers[shipment.LoadNumber] = struct{}{}
-				}
-
 				orderPayload := mapShipmentToLoaderOrder(shipment)
+				key := chrobDedupKey(shipment, orderPayload)
+				if _, exists := seenKeys[key]; exists {
+					continue
+				}
+				seenKeys[key] = struct{}{}
+				addedKeys++
 				pageOrders = append(pageOrders, orderPayload)
 
 				if name := strings.TrimSpace(shipment.Contact.CompanyName); name != "" {
@@ -158,6 +212,15 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 					"totalCount": searchResponse.TotalCount,
 				}).Warn("CHRob paging yielded 0 new unique loads; stopping pagination for location")
 				break
+			}
+
+			if shipmentKeyWarning := addedKeys == 0 && len(searchResponse.Results) > 0; shipmentKeyWarning {
+				log.WithFields(log.Fields{
+					"lat":       lat,
+					"lng":       lng,
+					"pageIndex": pageIndex,
+					"results":   len(searchResponse.Results),
+				}).Warn("CHRob page produced results but none were enqueued (all duplicates)")
 			}
 
 			// Prototype-test UI mode: do not POST to Loader API.
