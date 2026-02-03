@@ -61,7 +61,7 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 		fromDate := time.Now().Format("2006-01-02")
 		toDate := time.Now().AddDate(0, 0, 10).Format("2006-01-02")
 
-		searchRequest := chrobinson.AvailableShipmentSearchRequest{
+		baseRequest := chrobinson.AvailableShipmentSearchRequest{
 			PageIndex:  0,
 			PageSize:   100,
 			RegionCode: "NA",
@@ -83,55 +83,94 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 			},
 		}
 
-		var searchResponse *chrobinson.AvailableShipmentSearchResponse
-		err = chrobinson.HandleAPICall(client, func() error {
-			resp, err := client.SearchAvailableShipments(searchRequest)
+		seenLoadNumbers := make(map[int]struct{}, 256)
+		pageIndex := 0
+		for {
+			searchRequest := baseRequest
+			searchRequest.PageIndex = pageIndex
+
+			var searchResponse *chrobinson.AvailableShipmentSearchResponse
+			err = chrobinson.HandleAPICall(client, func() error {
+				resp, err := client.SearchAvailableShipments(searchRequest)
+				if err != nil {
+					return err
+				}
+				searchResponse = resp
+				return nil
+			})
 			if err != nil {
-				return err
-			}
-			searchResponse = resp
-			return nil
-		})
-		if err != nil {
-			log.WithError(err).Error("CHRob available shipments search failed")
-			searchErrors++
-			continue
-		}
-
-		totalShipments += len(searchResponse.Results)
-		log.WithFields(log.Fields{
-			"results": len(searchResponse.Results),
-			"lat":     lat,
-			"lng":     lng,
-		}).Info("CHRob search complete (location)")
-
-		for _, shipment := range searchResponse.Results {
-			orderPayload := mapShipmentToLoaderOrder(shipment)
-
-			if name := strings.TrimSpace(shipment.Contact.CompanyName); name != "" {
-				companyNameCounts[name]++
-			}
-			if name := strings.TrimSpace(shipment.Origin.Name); name != "" {
-				originNameCounts[name]++
-			}
-			if name := strings.TrimSpace(shipment.Destination.Name); name != "" {
-				destNameCounts[name]++
-			}
-
-			if err := loaderClient.CreateOrder(orderPayload); err != nil {
 				log.WithError(err).WithFields(log.Fields{
-					"source":      orderPayload.Source,
-					"orderNumber": orderPayload.OrderNumber,
-				}).Error("Failed to post order to Loader API")
-				continue
+					"pageIndex": pageIndex,
+				}).Error("CHRob available shipments search failed")
+				searchErrors++
+				break
 			}
-			totalPosted++
 
-			// Prototype UI feed is disabled on `prototype-test`.
-			// if feed != nil {
-			// 	feed.Add(orderPayload)
-			// 	totalEnqueued++
-			// }
+			if searchResponse == nil || len(searchResponse.Results) == 0 {
+				log.WithFields(log.Fields{
+					"lat":       lat,
+					"lng":       lng,
+					"pageIndex": pageIndex,
+				}).Info("CHRob search complete (no more results)")
+				break
+			}
+
+			log.WithFields(log.Fields{
+				"results":    len(searchResponse.Results),
+				"totalCount": searchResponse.TotalCount,
+				"lat":        lat,
+				"lng":        lng,
+				"pageIndex":  pageIndex,
+				"pageSize":   searchRequest.PageSize,
+			}).Info("CHRob search page fetched")
+
+			totalShipments += len(searchResponse.Results)
+
+			for _, shipment := range searchResponse.Results {
+				if shipment.LoadNumber != 0 {
+					if _, exists := seenLoadNumbers[shipment.LoadNumber]; exists {
+						continue
+					}
+					seenLoadNumbers[shipment.LoadNumber] = struct{}{}
+				}
+
+				orderPayload := mapShipmentToLoaderOrder(shipment)
+
+				if name := strings.TrimSpace(shipment.Contact.CompanyName); name != "" {
+					companyNameCounts[name]++
+				}
+				if name := strings.TrimSpace(shipment.Origin.Name); name != "" {
+					originNameCounts[name]++
+				}
+				if name := strings.TrimSpace(shipment.Destination.Name); name != "" {
+					destNameCounts[name]++
+				}
+
+				if err := loaderClient.CreateOrder(orderPayload); err != nil {
+					log.WithError(err).WithFields(log.Fields{
+						"source":      orderPayload.Source,
+						"orderNumber": orderPayload.OrderNumber,
+					}).Error("Failed to post order to Loader API")
+					continue
+				}
+				totalPosted++
+
+				// Prototype UI feed is disabled on `prototype-test`.
+				// if feed != nil {
+				// 	feed.Add(orderPayload)
+				// 	totalEnqueued++
+				// }
+			}
+
+			// Stop when we've exhausted the result set.
+			if len(searchResponse.Results) < searchRequest.PageSize {
+				break
+			}
+			if searchResponse.TotalCount > 0 && (pageIndex+1)*searchRequest.PageSize >= searchResponse.TotalCount {
+				break
+			}
+
+			pageIndex++
 		}
 	}
 
