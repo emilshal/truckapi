@@ -174,13 +174,30 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 				"lng":        lng,
 				"pageIndex":  pageIndex,
 				"pageSize":   searchRequest.PageSize,
+				"modes":      strings.Join(searchRequest.Modes, ","),
 			}).Info("CHRob search page fetched")
 
 			totalShipments += len(searchResponse.Results)
 
 			var pageOrders []loader.LoaderOrder
 			var addedKeys int
+			var zeroLoadNumber int
+			if len(searchResponse.Results) > 0 {
+				s := searchResponse.Results[0]
+				log.WithFields(log.Fields{
+					"sample_loadNumber": s.LoadNumber,
+					"sample_modes":      strings.Join(s.Modes, ","),
+					"sample_origin":     fmt.Sprintf("%s, %s %s", s.Origin.City, firstNonEmpty(s.Origin.State, s.Origin.StateCode), firstNonEmpty(s.Origin.Zip, s.Origin.PostalCode)),
+					"sample_dest":       fmt.Sprintf("%s, %s %s", s.Destination.City, firstNonEmpty(s.Destination.State, s.Destination.StateCode), firstNonEmpty(s.Destination.Zip, s.Destination.PostalCode)),
+					"sample_miles":      s.Distance.Miles,
+					"sample_weight_lb":  s.Weight.Pounds,
+					"sample_equipment":  firstNonEmpty(s.SpecializedEquipment.Description, s.SpecializedEquipment.Code),
+				}).Debug("CHRob response sample (first result)")
+			}
 			for _, shipment := range searchResponse.Results {
+				if shipment.LoadNumber == 0 {
+					zeroLoadNumber++
+				}
 				orderPayload := mapShipmentToLoaderOrder(shipment)
 				key := chrobDedupKey(shipment, orderPayload)
 				if _, exists := seenKeys[key]; exists {
@@ -200,6 +217,18 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 					destNameCounts[name]++
 				}
 			}
+
+			log.WithFields(log.Fields{
+				"lat":              lat,
+				"lng":              lng,
+				"pageIndex":        pageIndex,
+				"results":          len(searchResponse.Results),
+				"enqueued_unique":  len(pageOrders),
+				"dedup_skipped":    len(searchResponse.Results) - len(pageOrders),
+				"loadNumber_zero":  zeroLoadNumber,
+				"loadNumber_non0":  len(searchResponse.Results) - zeroLoadNumber,
+				"totalCount_field": searchResponse.TotalCount,
+			}).Info("CHRob page summary")
 
 			// If the API ignores pageIndex or returns a repeated page, we can end up in an infinite loop.
 			// Break when this page contains no new unique loads.
@@ -230,6 +259,20 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 					feed.Add(o)
 					totalEnqueued++
 				}
+				log.WithFields(log.Fields{
+					"pageIndex":       pageIndex,
+					"enqueued":        len(pageOrders),
+					"enqueued_total":  totalEnqueued,
+					"location_lat":    lat,
+					"location_lng":    lng,
+					"location_source": "CHROBINSON",
+				}).Info("CHRob enqueued into UI feed")
+			} else {
+				log.WithFields(log.Fields{
+					"pageIndex":    pageIndex,
+					"location_lat": lat,
+					"location_lng": lng,
+				}).Warn("UI feed store is nil; cannot enqueue CHRob orders")
 			}
 
 			// Stop when we've exhausted the result set.
