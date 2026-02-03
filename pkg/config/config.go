@@ -37,6 +37,8 @@ const (
 	TruckstopLoadSearchURL = "TRUCKSTOP_LOAD_SEARCH_URL"
 	LoaderAPIBaseURL       = "LOADER_API_BASE_URL"
 	LoaderAPIKey           = "LOADER_API_KEY"
+	LoaderPostWorkers      = "LOADER_POST_WORKERS"
+	LoaderPostMaxRetries   = "LOADER_POST_MAX_RETRIES"
 )
 
 var (
@@ -56,6 +58,8 @@ var (
 		"OPENAI_API_KEY":      "",
 		LoaderAPIBaseURL:      "https://core.hfield.net",
 		LoaderAPIKey:          "loaderBMwuIUZKtyH8fetLykDch07dxfciUZZ8lrGqOfmVaAjnXAhcwIRIdBCyhg",
+		LoaderPostWorkers:     "8",
+		LoaderPostMaxRetries:  "3",
 	}
 
 	EnvKeys = []string{
@@ -76,6 +80,8 @@ var (
 		TruckstopLoadSearchURL,
 		LoaderAPIBaseURL,
 		LoaderAPIKey,
+		LoaderPostWorkers,
+		LoaderPostMaxRetries,
 	}
 
 	EnvFilePath string

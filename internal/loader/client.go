@@ -2,10 +2,13 @@ package loader
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 	"truckapi/internal/httpdebug"
@@ -18,6 +21,15 @@ type APIClient struct {
 	BaseURL    string
 	APIKey     string
 	HTTPClient *http.Client
+}
+
+type APIError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *APIError) Error() string {
+	return fmt.Sprintf("loader api returned %d: %s", e.StatusCode, e.Body)
 }
 
 func NewAPIClient(baseURL, apiKey string, httpClient *http.Client) *APIClient {
@@ -77,7 +89,7 @@ func (client *APIClient) CreateOrder(order LoaderOrder) error {
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusAccepted {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("loader create order returned %d: %s", resp.StatusCode, string(body))
+		return &APIError{StatusCode: resp.StatusCode, Body: string(body)}
 	}
 
 	log.WithFields(log.Fields{
@@ -88,4 +100,134 @@ func (client *APIClient) CreateOrder(order LoaderOrder) error {
 	}).Info("✅ Posted order to Loader API")
 
 	return nil
+}
+
+type PostPool struct {
+	Client     *APIClient
+	Workers    int
+	MaxRetries int
+
+	QueueSize int
+}
+
+func (p PostPool) postWithRetry(ctx context.Context, order LoaderOrder) error {
+	maxRetries := p.MaxRetries
+	if maxRetries < 0 {
+		maxRetries = 0
+	}
+
+	baseDelay := 250 * time.Millisecond
+	for attempt := 0; ; attempt++ {
+		err := p.Client.CreateOrder(order)
+		if err == nil {
+			return nil
+		}
+
+		// Decide if we should retry.
+		retry := false
+		if apiErr, ok := err.(*APIError); ok {
+			if apiErr.StatusCode == http.StatusTooManyRequests || apiErr.StatusCode >= 500 {
+				retry = true
+			}
+		} else {
+			// Network / unknown errors: retry.
+			retry = true
+		}
+
+		if !retry || attempt >= maxRetries {
+			return err
+		}
+
+		// Exponential backoff with jitter.
+		delay := baseDelay * time.Duration(1<<attempt)
+		if delay > 5*time.Second {
+			delay = 5 * time.Second
+		}
+		jitter := time.Duration(rand.Int63n(int64(delay / 3)))
+		sleep := delay - jitter
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(sleep):
+		}
+	}
+}
+
+// PostAll concurrently posts orders from `orders` and blocks until all have been processed.
+// It returns the number of successful posts and a slice of errors (one per failed post).
+func (p PostPool) PostAll(ctx context.Context, orders []LoaderOrder) (int, []error) {
+	if p.Client == nil {
+		return 0, []error{fmt.Errorf("post pool client is nil")}
+	}
+	workers := p.Workers
+	if workers <= 0 {
+		if s := strings.TrimSpace(config.GetEnv(config.LoaderPostWorkers, "")); s != "" {
+			if n, err := strconv.Atoi(s); err == nil && n > 0 {
+				workers = n
+			}
+		}
+		if workers <= 0 {
+			workers = 8
+		}
+	}
+
+	maxRetries := p.MaxRetries
+	if maxRetries == 0 {
+		if s := strings.TrimSpace(config.GetEnv(config.LoaderPostMaxRetries, "")); s != "" {
+			if n, err := strconv.Atoi(s); err == nil {
+				maxRetries = n
+			}
+		}
+	}
+
+	queueSize := p.QueueSize
+	if queueSize <= 0 {
+		queueSize = workers * 50
+	}
+
+	type result struct {
+		err error
+	}
+
+	jobs := make(chan LoaderOrder, queueSize)
+	results := make(chan result, queueSize)
+
+	worker := func() {
+		for order := range jobs {
+			results <- result{err: PostPool{Client: p.Client, MaxRetries: maxRetries}.postWithRetry(ctx, order)}
+		}
+	}
+
+	for i := 0; i < workers; i++ {
+		go worker()
+	}
+
+	go func() {
+		defer close(jobs)
+		for _, o := range orders {
+			select {
+			case <-ctx.Done():
+				return
+			case jobs <- o:
+			}
+		}
+	}()
+
+	var okCount int
+	var errs []error
+	for i := 0; i < len(orders); i++ {
+		select {
+		case <-ctx.Done():
+			return okCount, append(errs, ctx.Err())
+		case r := <-results:
+			if r.err != nil {
+				errs = append(errs, r.err)
+			} else {
+				okCount++
+			}
+		}
+	}
+
+	return okCount, errs
 }

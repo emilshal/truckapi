@@ -1,6 +1,7 @@
 package chrobrunner
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strconv"
@@ -36,6 +37,7 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 	)
 
 	loaderClient := loader.NewAPIClientFromEnv(nil)
+	postPool := loader.PostPool{Client: loaderClient}
 
 	for _, loc := range locations {
 		lat, err := parseFloatField(loc.Latitude)
@@ -126,6 +128,7 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 
 			totalShipments += len(searchResponse.Results)
 
+			var pageOrders []loader.LoaderOrder
 			for _, shipment := range searchResponse.Results {
 				if shipment.LoadNumber != 0 {
 					if _, exists := seenLoadNumbers[shipment.LoadNumber]; exists {
@@ -135,6 +138,7 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 				}
 
 				orderPayload := mapShipmentToLoaderOrder(shipment)
+				pageOrders = append(pageOrders, orderPayload)
 
 				if name := strings.TrimSpace(shipment.Contact.CompanyName); name != "" {
 					companyNameCounts[name]++
@@ -145,22 +149,28 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 				if name := strings.TrimSpace(shipment.Destination.Name); name != "" {
 					destNameCounts[name]++
 				}
-
-				if err := loaderClient.CreateOrder(orderPayload); err != nil {
-					log.WithError(err).WithFields(log.Fields{
-						"source":      orderPayload.Source,
-						"orderNumber": orderPayload.OrderNumber,
-					}).Error("Failed to post order to Loader API")
-					continue
-				}
-				totalPosted++
-
-				// Prototype UI feed is disabled on `prototype-test`.
-				// if feed != nil {
-				// 	feed.Add(orderPayload)
-				// 	totalEnqueued++
-				// }
 			}
+
+			if len(pageOrders) > 0 {
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+				ok, errs := postPool.PostAll(ctx, pageOrders)
+				cancel()
+
+				totalPosted += ok
+				if len(errs) > 0 {
+					for _, postErr := range errs {
+						log.WithError(postErr).Error("Failed to post order to Loader API")
+					}
+				}
+			}
+
+			// Prototype UI feed is disabled on `prototype-test`.
+			// if feed != nil {
+			// 	for _, o := range pageOrders {
+			// 		feed.Add(o)
+			// 		totalEnqueued++
+			// 	}
+			// }
 
 			// Stop when we've exhausted the result set.
 			if len(searchResponse.Results) < searchRequest.PageSize {
