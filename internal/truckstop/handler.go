@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 	"truckapi/internal/chrobinson"
+	"truckapi/internal/uifeed"
+	"truckapi/pkg/config"
 
 	"github.com/gofiber/fiber/v2"
 
@@ -92,9 +94,9 @@ func BuildLoadSearchRequest(info chrobinson.CombinedShipmentInfo, fromDate, toDa
 	}
 }
 
-func TruckstopSearchHandler(client *LoadSearchClient) fiber.Handler {
+func TruckstopSearchHandler(client *LoadSearchClient, feed *uifeed.Store) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		err := TruckstopSearchProcess(client)
+		err := TruckstopSearchProcess(client, feed)
 		if err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 				"error": err.Error(),
@@ -102,7 +104,7 @@ func TruckstopSearchHandler(client *LoadSearchClient) fiber.Handler {
 		}
 
 		return c.JSON(fiber.Map{
-			"message": "Truckstop loads processed and posted to Loader API",
+			"message": "Truckstop loads processed and sent to UI feed",
 		})
 	}
 }
@@ -613,16 +615,38 @@ func (c *LoadSearchClient) GetMultipleLoadDetails(req LoadSearchRequest) ([]Load
 		return nil, "", fmt.Errorf("read body: %w", err)
 	}
 
-	fmt.Println("🚨 RAW SOAP response:\n" + string(bodyBytes))
+	// Avoid dumping huge SOAP/HTML payloads to stdout by default.
+	// If you need to see raw bodies, set `TRUCKSTOP_DEBUG_BODY=true`.
+	if v := strings.ToLower(strings.TrimSpace(config.GetEnv("TRUCKSTOP_DEBUG_BODY", "false"))); v == "1" || v == "true" || v == "yes" {
+		const max = 16 * 1024
+		s := string(bodyBytes)
+		if len(s) > max {
+			s = s[:max] + "\n…(truncated)…\n"
+		}
+		log.WithFields(log.Fields{
+			"status":     resp.StatusCode,
+			"body_bytes": len(bodyBytes),
+		}).Infof("🚨 RAW SOAP response:\n%s", s)
+	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, string(bodyBytes), fmt.Errorf("API error %d: %s", resp.StatusCode, string(bodyBytes))
+		const max = 16 * 1024
+		s := string(bodyBytes)
+		if len(s) > max {
+			s = s[:max] + "\n…(truncated)…\n"
+		}
+		return nil, string(bodyBytes), fmt.Errorf("API error %d: %s", resp.StatusCode, s)
 	}
 
 	// unmarshal into MultipleLoadDetailEnvelope
 	var envelope MultipleLoadDetailEnvelope
 	if err := xml.Unmarshal(bodyBytes, &envelope); err != nil {
-		return nil, string(bodyBytes), fmt.Errorf("unmarshal: %w", err)
+		const max = 16 * 1024
+		s := string(bodyBytes)
+		if len(s) > max {
+			s = s[:max] + "\n…(truncated)…\n"
+		}
+		return nil, string(bodyBytes), fmt.Errorf("unmarshal: %w; body: %s", err, s)
 	}
 
 	loads := envelope.Body.Response.Result.DetailResults.Loads

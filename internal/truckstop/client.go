@@ -3,6 +3,7 @@ package truckstop
 import (
 	"net/http"
 	"time"
+	"truckapi/internal/httpdebug"
 	"truckapi/pkg/config"
 )
 
@@ -21,6 +22,9 @@ func NewLoadSearchClient(cfg *config.TruckstopConfig) *LoadSearchClient {
 		Password:      cfg.Password,
 		IntegrationID: cfg.IntegrationID,
 		LoadSearchURL: cfg.LoadSearchURL,
-		Client:        &http.Client{Timeout: 10 * time.Second},
+		Client: &http.Client{
+			Timeout:   10 * time.Second,
+			Transport: httpdebug.NewTransport(http.DefaultTransport),
+		},
 	}
 }

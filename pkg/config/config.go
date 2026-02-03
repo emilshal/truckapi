@@ -5,12 +5,15 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/joho/godotenv"
 	log "github.com/sirupsen/logrus"
+	"gopkg.in/natefinch/lumberjack.v2"
 	"gorm.io/gorm"
 )
 
@@ -85,8 +88,21 @@ func LoadTruckstopConfig() (*TruckstopConfig, error) {
 	integrationIDStr := GetEnv(TruckstopIntegrationID, "")
 	loadSearchURL := GetEnv(TruckstopLoadSearchURL, "")
 
-	if username == "" || password == "" || integrationIDStr == "" || loadSearchURL == "" {
-		return nil, fmt.Errorf("missing required truckstop environment variables")
+	missing := make([]string, 0, 4)
+	if username == "" {
+		missing = append(missing, TruckstopUsername)
+	}
+	if password == "" {
+		missing = append(missing, TruckstopPassword)
+	}
+	if integrationIDStr == "" {
+		missing = append(missing, TruckstopIntegrationID)
+	}
+	if loadSearchURL == "" {
+		missing = append(missing, TruckstopLoadSearchURL)
+	}
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("missing required truckstop environment variables: %s", strings.Join(missing, ", "))
 	}
 
 	integrationID, err := strconv.Atoi(integrationIDStr)
@@ -182,10 +198,68 @@ func loadEnvironmentVariables() {
 
 // Set up logging configuration
 func initializeLogging() {
-	log.SetOutput(os.Stderr)
+	logDir := filepath.Join(filepath.Dir(EnvFilePath), "logs")
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		// Fall back to stderr-only logging if we can't create the dir.
+		log.WithError(err).Warn("Failed to create logs directory; using stderr only")
+		log.SetOutput(os.Stderr)
+	} else {
+		logFile := GetEnv("LOG_FILE", filepath.Join(logDir, "app.log"))
+		rotate := &lumberjack.Logger{
+			Filename:   logFile,
+			MaxSize:    25, // MB
+			MaxBackups: 10,
+			MaxAge:     14, // days
+			Compress:   true,
+		}
+
+		// Allow overrides.
+		if v := strings.TrimSpace(GetEnv("LOG_MAX_SIZE_MB", "")); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				rotate.MaxSize = n
+			}
+		}
+		if v := strings.TrimSpace(GetEnv("LOG_MAX_BACKUPS", "")); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+				rotate.MaxBackups = n
+			}
+		}
+		if v := strings.TrimSpace(GetEnv("LOG_MAX_AGE_DAYS", "")); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+				rotate.MaxAge = n
+			}
+		}
+		if v := strings.TrimSpace(GetEnv("LOG_COMPRESS", "")); v != "" {
+			switch strings.ToLower(v) {
+			case "1", "true", "yes", "y", "on":
+				rotate.Compress = true
+			case "0", "false", "no", "n", "off":
+				rotate.Compress = false
+			}
+		}
+
+		log.SetOutput(io.MultiWriter(os.Stderr, rotate))
+	}
 	log.SetFormatter(&log.JSONFormatter{})
-	log.SetLevel(log.InfoLevel)
-	log.Info("Logging initialized to stderr (Docker will capture logs).")
+
+	switch strings.ToLower(strings.TrimSpace(GetEnv("LOG_LEVEL", ""))) {
+	case "trace":
+		log.SetLevel(log.TraceLevel)
+	case "debug":
+		log.SetLevel(log.DebugLevel)
+	case "warn", "warning":
+		log.SetLevel(log.WarnLevel)
+	case "error":
+		log.SetLevel(log.ErrorLevel)
+	case "fatal":
+		log.SetLevel(log.FatalLevel)
+	default:
+		log.SetLevel(log.InfoLevel)
+	}
+
+	log.WithFields(log.Fields{
+		"log_file": GetEnv("LOG_FILE", filepath.Join(filepath.Join(filepath.Dir(EnvFilePath), "logs"), "app.log")),
+	}).Info("Logging initialized to stderr + rotating file")
 }
 
 // Utility to get environment variables with a fallback default

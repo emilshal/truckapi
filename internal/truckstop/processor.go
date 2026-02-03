@@ -1,23 +1,21 @@
 package truckstop
 
 import (
-	"bytes"
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
-	"io"
-	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 	"truckapi/db"
 	"truckapi/internal/loader"
+	"truckapi/internal/uifeed"
 
 	log "github.com/sirupsen/logrus"
 )
 
-func TruckstopSearchProcess(client *LoadSearchClient) error {
+func TruckstopSearchProcess(client *LoadSearchClient, feed *uifeed.Store) error {
 	locations, err := db.FetchLoaderLocations("TRUCKSTOP")
 	if err != nil {
 		log.WithError(err).Error("Failed to fetch locations from Loader API")
@@ -84,8 +82,18 @@ func TruckstopSearchProcess(client *LoadSearchClient) error {
 				},
 			}
 
-			reqJson, _ := json.MarshalIndent(request, "", "  ")
-			log.WithField("LoadSearchRequest", string(reqJson)).Infof("Prepared LoadSearchRequest for Truckstop (Equip Group: %s)", equipmentTypeStr)
+			// Avoid logging credentials. Log only non-sensitive request context.
+			log.WithFields(log.Fields{
+				"origin_city":    originCity,
+				"origin_state":   originState,
+				"equip_group":    equipmentTypeStr,
+				"pickup_from":    fromDate,
+				"pickup_to":      toDate,
+				"page_size":      request.Criteria.PageSize,
+				"hours_old":      request.Criteria.HoursOld,
+				"integration_id": client.IntegrationID,
+				"username":       client.Username,
+			}).Info("Prepared LoadSearchRequest for Truckstop")
 
 			details, rawXML, err := client.GetMultipleLoadDetails(request)
 			log.Infof("✅ RAW XML length for equip group %s: %d bytes", equipmentTypeStr, len(rawXML))
@@ -249,36 +257,10 @@ func TruckstopSearchProcess(client *LoadSearchClient) error {
 				fmt.Printf("\n=== RAW XML FOR LOAD ID %s ===\n%s\n\n", load.ID, orderPayload.LoadTruckstopXML)
 				// fmt.Printf("\n=== RAW SOAP FRAGMENT FOR LOAD ID %s ===\n%s\n\n", load.ID, orderPayload.RawTruckstopFragmentXML)
 
-				payloadBytes, err := json.Marshal(orderPayload)
-				if err != nil {
-					log.WithError(err).Error("Failed to marshal order payload")
-					continue
-				}
-
-				req, err := http.NewRequest(
-					"POST",
-					"https://core.hfield.net/api/v1/loader/orders",
-					bytes.NewBuffer(payloadBytes),
-				)
-				if err != nil {
-					log.WithError(err).Error("Failed to create POST request to Loader API")
-					continue
-				}
-				req.Header.Set("Content-Type", "application/json")
-				req.Header.Set("X-API-KEY", "loaderBMwuIUZKtyH8fetLykDch07dxfciUZZ8lrGqOfmVaAjnXAhcwIRIdBCyhg")
-
-				resp, err := http.DefaultClient.Do(req)
-				if err != nil {
-					log.WithError(err).Error("Failed to send POST request to Loader API")
-					continue
-				}
-				defer resp.Body.Close()
-
-				if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-					body, _ := io.ReadAll(resp.Body)
-					log.Errorf("Loader API responded with status %d: %s", resp.StatusCode, string(body))
-				} else {
-					log.Infof("✅ Successfully posted order %s to Loader API", orderPayload.OrderNumber)
+				// Prototype: do not POST to Loader API. Send to in-memory UI feed instead.
+				// Old Loader API POST is intentionally removed/commented for prototype verification.
+				if feed != nil {
+					feed.Add(orderPayload)
 				}
 			}
 		}
@@ -349,8 +331,8 @@ func parseHeightFromDims(dims string) float64 {
 // SplitAndTrim splits a string by a separator and trims whitespace from each element.
 func SplitAndTrim(s, sep string) []string {
 	parts := []string{}
-	for _, p := range bytes.Split([]byte(s), []byte(sep)) {
-		part := string(bytes.TrimSpace(p))
+	for _, p := range strings.Split(s, sep) {
+		part := strings.TrimSpace(p)
 		if part != "" {
 			parts = append(parts, part)
 		}
@@ -359,16 +341,40 @@ func SplitAndTrim(s, sep string) []string {
 }
 
 // StartTruckstopRunner starts a background goroutine to run every 3 minutes.
-func StartTruckstopRunner(client *LoadSearchClient) {
+func StartTruckstopRunner(client *LoadSearchClient, feed *uifeed.Store) {
 	go func() {
+		log.WithFields(log.Fields{
+			"runner": "TRUCKSTOP",
+		}).Info("Runner started")
+
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
 
-		// Run immediately on startup
-		TruckstopSearchProcess(client)
+		runOnce := func() {
+			start := time.Now()
+			log.WithFields(log.Fields{
+				"runner": "TRUCKSTOP",
+			}).Info("Runner cycle start")
+
+			if err := TruckstopSearchProcess(client, feed); err != nil {
+				log.WithError(err).WithFields(log.Fields{
+					"runner":      "TRUCKSTOP",
+					"duration_ms": time.Since(start).Milliseconds(),
+				}).Error("Runner cycle failed")
+				return
+			}
+
+			log.WithFields(log.Fields{
+				"runner":      "TRUCKSTOP",
+				"duration_ms": time.Since(start).Milliseconds(),
+			}).Info("Runner cycle complete")
+		}
+
+		// Run immediately on startup.
+		runOnce()
 
 		for range ticker.C {
-			TruckstopSearchProcess(client)
+			runOnce()
 		}
 	}()
 }

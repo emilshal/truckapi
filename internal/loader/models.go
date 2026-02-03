@@ -38,7 +38,7 @@ type LoaderOrder struct {
 	TruckCompanyEmail   string  `json:"truckCompanyEmail"`
 	SpecInfo            string  `json:"specInfo"`
 	PointOfContactPhone string  `json:"pointOfContactPhone"`
-	LoadTruckstopXML    string  `json:"loadTruckstopXML"`
+	LoadTruckstopXML    string  `json:"loadTruckstopXML,omitempty"`
 	AirRide             int     `json:"airRide"`
 	LiftGate            int     `json:"liftGate"`
 

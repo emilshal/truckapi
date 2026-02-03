@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"truckapi/internal/chrobinson"
+	"truckapi/internal/httpdebug"
 
 	"github.com/gofiber/websocket/v2"
 	log "github.com/sirupsen/logrus"
@@ -230,7 +231,7 @@ func SearchAvailableShipmentsForTruck(apiClient *chrobinson.APIClient, combinedI
 		PageIndex:  0,
 		PageSize:   100,
 		RegionCode: "NA",
-		Modes:      []string{"T", "L", "F", "B", "V", "R", "O"},
+		Modes:      []string{"F", "L", "R", "V", "H"},
 		OriginRadiusSearch: &chrobinson.RadiusSearch{
 			Coordinate: chrobinson.Coordinate{
 				Lat: combinedInfo.LocationData.Lat,
@@ -605,7 +606,8 @@ func FetchLoaderLocations(source string) ([]chrobinson.LoaderLocation, error) {
 	req.Header.Add("X-API-KEY", "loaderBMwuIUZKtyH8fetLykDch07dxfciUZZ8lrGqOfmVaAjnXAhcwIRIdBCyhg")
 
 	client := &http.Client{
-		Timeout: 15 * time.Second,
+		Timeout:   15 * time.Second,
+		Transport: httpdebug.NewTransport(http.DefaultTransport),
 	}
 
 	resp, err := client.Do(req)

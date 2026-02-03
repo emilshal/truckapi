@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Prototype Feed</title>
+    <link href="./css/prototype.css" rel="stylesheet" />
+  </head>
+  <body>
+    <header class="header">
+      <div class="title">
+        <h1>Prototype Feed</h1>
+        <div class="subtitle">Raw mapped orders (in-memory)</div>
+      </div>
+
+      <div class="controls">
+        <div class="toggle" role="tablist" aria-label="Source">
+          <button id="btnCHROB" class="btn active" data-source="CHROBINSON" type="button">
+            CHRob
+          </button>
+          <button id="btnTS" class="btn" data-source="TRUCKSTOP" type="button">
+            Truckstop
+          </button>
+        </div>
+
+        <div class="pager">
+          <button id="prevBtn" class="btn" type="button">Prev</button>
+          <div class="pageInfo">
+            <span id="pageLabel">Page 1</span>
+            <span id="countLabel">0 total</span>
+          </div>
+          <button id="nextBtn" class="btn" type="button">Next</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="main">
+      <div id="status" class="status">Loading…</div>
+      <div id="list" class="list"></div>
+    </main>
+
+    <script src="./js/prototype.js"></script>
+  </body>
+</html>
+

@@ -1,26 +1,20 @@
 package chrobrunner
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
-	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 	"truckapi/db"
 	"truckapi/internal/chrobinson"
 	"truckapi/internal/loader"
+	"truckapi/internal/uifeed"
 
 	log "github.com/sirupsen/logrus"
 )
 
-const (
-	loaderOrdersEndpoint = "https://core.hfield.net/api/v1/loader/orders"
-	loaderAPIKey         = "loaderBMwuIUZKtyH8fetLykDch07dxfciUZZ8lrGqOfmVaAjnXAhcwIRIdBCyhg"
-)
-
-func ChrobSearchProcess(client *chrobinson.APIClient) error {
+func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error {
 	locations, err := db.FetchLoaderLocations("TRUCKSTOP")
 	if err != nil {
 		log.WithError(err).Error("Failed to fetch locations from Loader API")
@@ -29,17 +23,37 @@ func ChrobSearchProcess(client *chrobinson.APIClient) error {
 
 	log.Infof("Fetched %d locations from Loader API", len(locations))
 
+	var (
+		processedLocations int
+		skippedLocations   int
+		searchErrors       int
+		totalShipments     int
+		totalEnqueued      int
+		companyNameCounts  = map[string]int{}
+		originNameCounts   = map[string]int{}
+		destNameCounts     = map[string]int{}
+	)
+
 	for _, loc := range locations {
 		lat, err := parseFloatField(loc.Latitude)
 		if err != nil {
 			log.WithError(err).Warnf("Skipping location with invalid latitude: %q", loc.Latitude)
+			skippedLocations++
 			continue
 		}
 		lng, err := parseFloatField(loc.Longitude)
 		if err != nil {
 			log.WithError(err).Warnf("Skipping location with invalid longitude: %q", loc.Longitude)
+			skippedLocations++
 			continue
 		}
+
+		processedLocations++
+		log.WithFields(log.Fields{
+			"lat":    lat,
+			"lng":    lng,
+			"source": "CHROBINSON",
+		}).Info("CHRob search start (location)")
 
 		fromDate := time.Now().Format("2006-01-02")
 		toDate := time.Now().AddDate(0, 0, 10).Format("2006-01-02")
@@ -48,7 +62,7 @@ func ChrobSearchProcess(client *chrobinson.APIClient) error {
 			PageIndex:  0,
 			PageSize:   100,
 			RegionCode: "NA",
-			Modes:      []string{"T", "L", "F", "B", "V", "R", "O"},
+			Modes:      []string{"F", "L", "R", "V", "H"},
 			OriginRadiusSearch: &chrobinson.RadiusSearch{
 				Coordinate: chrobinson.Coordinate{Lat: lat, Lon: lng},
 				Radius: chrobinson.Radius{
@@ -77,58 +91,90 @@ func ChrobSearchProcess(client *chrobinson.APIClient) error {
 		})
 		if err != nil {
 			log.WithError(err).Error("CHRob available shipments search failed")
+			searchErrors++
 			continue
 		}
+
+		totalShipments += len(searchResponse.Results)
+		log.WithFields(log.Fields{
+			"results": len(searchResponse.Results),
+			"lat":     lat,
+			"lng":     lng,
+		}).Info("CHRob search complete (location)")
 
 		for _, shipment := range searchResponse.Results {
 			orderPayload := mapShipmentToLoaderOrder(shipment)
 
-			payloadBytes, err := json.Marshal(orderPayload)
-			if err != nil {
-				log.WithError(err).Error("Failed to marshal order payload")
-				continue
+			if name := strings.TrimSpace(shipment.Contact.CompanyName); name != "" {
+				companyNameCounts[name]++
+			}
+			if name := strings.TrimSpace(shipment.Origin.Name); name != "" {
+				originNameCounts[name]++
+			}
+			if name := strings.TrimSpace(shipment.Destination.Name); name != "" {
+				destNameCounts[name]++
 			}
 
-			req, err := http.NewRequest(
-				http.MethodPost,
-				loaderOrdersEndpoint,
-				bytes.NewBuffer(payloadBytes),
-			)
-			if err != nil {
-				log.WithError(err).Error("Failed to create POST request to Loader API")
-				continue
-			}
-			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("X-API-KEY", loaderAPIKey)
-
-			resp, err := http.DefaultClient.Do(req)
-			if err != nil {
-				log.WithError(err).Error("Failed to send POST request to Loader API")
-				continue
-			}
-			_ = resp.Body.Close()
-
-			if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-				log.Errorf("Loader API responded with status %d for order %s", resp.StatusCode, orderPayload.OrderNumber)
-			} else {
-				log.Infof("✅ Successfully posted CHRob order %s to Loader API", orderPayload.OrderNumber)
+			// Prototype: do not POST to Loader API. Send to in-memory UI feed instead.
+			// (Old Loader API endpoint: https://core.hfield.net/api/v1/loader/orders)
+			if feed != nil {
+				feed.Add(orderPayload)
+				totalEnqueued++
 			}
 		}
 	}
 
-	log.Info("✅ ChrobSearchProcess completed.")
+	log.WithFields(log.Fields{
+		"processed_locations":    processedLocations,
+		"skipped_locations":      skippedLocations,
+		"search_errors":          searchErrors,
+		"shipments_total":        totalShipments,
+		"enqueued_total":         totalEnqueued,
+		"contact_company_unique": len(companyNameCounts),
+		"origin_name_unique":     len(originNameCounts),
+		"dest_name_unique":       len(destNameCounts),
+		"contact_company_top":    topCounts(companyNameCounts, 5),
+		"origin_name_top":        topCounts(originNameCounts, 5),
+		"dest_name_top":          topCounts(destNameCounts, 5),
+	}).Info("✅ ChrobSearchProcess completed")
 	return nil
 }
 
-func StartChrobRunner(client *chrobinson.APIClient) {
+func StartChrobRunner(client *chrobinson.APIClient, feed *uifeed.Store) {
 	go func() {
+		log.WithFields(log.Fields{
+			"runner": "CHROBINSON",
+		}).Info("Runner started")
+
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
 
-		ChrobSearchProcess(client)
+		runOnce := func() {
+			start := time.Now()
+			log.WithFields(log.Fields{
+				"runner": "CHROBINSON",
+			}).Info("Runner cycle start")
+
+			if err := ChrobSearchProcess(client, feed); err != nil {
+				log.WithError(err).WithFields(log.Fields{
+					"runner":       "CHROBINSON",
+					"duration_ms":  time.Since(start).Milliseconds(),
+					"completed_at": time.Now().Format(time.RFC3339),
+				}).Error("Runner cycle failed")
+				return
+			}
+
+			log.WithFields(log.Fields{
+				"runner":      "CHROBINSON",
+				"duration_ms": time.Since(start).Milliseconds(),
+			}).Info("Runner cycle complete")
+		}
+
+		// Run immediately on startup.
+		runOnce()
 
 		for range ticker.C {
-			ChrobSearchProcess(client)
+			runOnce()
 		}
 	}()
 }
@@ -147,11 +193,20 @@ func mapShipmentToLoaderOrder(shipment chrobinson.ShipmentInfo) loader.LoaderOrd
 		shipment.AvailableForPickUp.EndDate,
 	)
 
-	pickupCountry := defaultCountry(shipment.Origin.Country)
-	deliveryCountry := defaultCountry(shipment.Destination.Country)
+	pickupTime := timeOfDay(pickupDate)
+	deliveryTime := timeOfDay(deliveryDate)
 
-	pickupLocation := formatLocation(shipment.Origin.City, shipment.Origin.State, pickupCountry)
-	deliveryLocation := formatLocation(shipment.Destination.City, shipment.Destination.State, deliveryCountry)
+	pickupState := firstNonEmpty(shipment.Origin.State, shipment.Origin.StateCode)
+	deliveryState := firstNonEmpty(shipment.Destination.State, shipment.Destination.StateCode)
+
+	pickupZip := firstNonEmpty(shipment.Origin.Zip, shipment.Origin.PostalCode)
+	deliveryZip := firstNonEmpty(shipment.Destination.Zip, shipment.Destination.PostalCode)
+
+	pickupCountry := defaultCountry(firstNonEmpty(shipment.Origin.Country, countryFromCode(shipment.Origin.CountryCode)))
+	deliveryCountry := defaultCountry(firstNonEmpty(shipment.Destination.Country, countryFromCode(shipment.Destination.CountryCode)))
+
+	pickupLocation := formatLocation(shipment.Origin.City, pickupState, pickupCountry)
+	deliveryLocation := formatLocation(shipment.Destination.City, deliveryState, deliveryCountry)
 
 	length := firstNonZero(shipment.Equipment.Length.Standard, shipment.SpecializedEquipment.Length.Standard)
 	width := firstNonZero(shipment.Equipment.Width.Standard, shipment.SpecializedEquipment.Width.Standard)
@@ -183,23 +238,23 @@ func mapShipmentToLoaderOrder(shipment chrobinson.ShipmentInfo) loader.LoaderOrd
 		DeliveryLocation:    deliveryLocation,
 		PickupDate:          pickupDate,
 		DeliveryDate:        deliveryDate,
-		PickupTime:          "",
-		DeliveryTime:        "",
+		PickupTime:          pickupTime,
+		DeliveryTime:        deliveryTime,
 		SuggestedTruckSize:  suggestedTruckSize,
 		TruckTypeId:         truckTypeID,
 		OriginalTruckSize:   originalTruckSize,
-		PickupZip:           shipment.Origin.Zip,
-		DeliveryZip:         shipment.Destination.Zip,
+		PickupZip:           pickupZip,
+		DeliveryZip:         deliveryZip,
 		PickupCity:          shipment.Origin.City,
-		PickupState:         shipment.Origin.State,
+		PickupState:         pickupState,
 		PickupCountry:       pickupCountry,
 		PickupCountryCode:   countryCode(pickupCountry),
-		PickupCountryName:   pickupCountry,
+		PickupCountryName:   countryName(pickupCountry),
 		DeliveryCity:        shipment.Destination.City,
-		DeliveryState:       shipment.Destination.State,
+		DeliveryState:       deliveryState,
 		DeliveryCountry:     deliveryCountry,
 		DeliveryCountryCode: countryCode(deliveryCountry),
-		DeliveryCountryName: deliveryCountry,
+		DeliveryCountryName: countryName(deliveryCountry),
 		EstimatedMiles:      shipment.Distance.Miles,
 		OrderTypeId:         5,
 		Length:              length,
@@ -220,6 +275,13 @@ func mapShipmentToLoaderOrder(shipment chrobinson.ShipmentInfo) loader.LoaderOrd
 		Quantity:            0,
 		Stops:               stops,
 		TruckCompanyName:    companyName,
+		EmptyDateTime:       deliveryDate,
+		EmptyLocation: loader.EmptyLocation{
+			City:    shipment.Destination.City,
+			State:   deliveryState,
+			Country: deliveryCountry,
+			Zip:     deliveryZip,
+		},
 	}
 }
 
@@ -327,6 +389,30 @@ func countryCode(country string) string {
 	return ""
 }
 
+func countryName(country string) string {
+	if strings.EqualFold(country, "USA") || strings.EqualFold(country, "United States") {
+		return "United States"
+	}
+	return country
+}
+
+func countryFromCode(code string) string {
+	if strings.EqualFold(strings.TrimSpace(code), "US") {
+		return "USA"
+	}
+	return ""
+}
+
+func timeOfDay(rfc3339OrDate string) string {
+	if strings.TrimSpace(rfc3339OrDate) == "" {
+		return ""
+	}
+	if t, ok := parseDateTime(rfc3339OrDate); ok {
+		return t.Format("15:04")
+	}
+	return ""
+}
+
 func firstNonZero(values ...float64) float64 {
 	for _, v := range values {
 		if v > 0 {
@@ -350,4 +436,29 @@ func boolToInt(value bool) int {
 		return 1
 	}
 	return 0
+}
+
+type kv struct {
+	Key   string
+	Count int
+}
+
+func topCounts(m map[string]int, n int) []kv {
+	if n <= 0 || len(m) == 0 {
+		return []kv{}
+	}
+	items := make([]kv, 0, len(m))
+	for k, c := range m {
+		items = append(items, kv{Key: k, Count: c})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Count == items[j].Count {
+			return items[i].Key < items[j].Key
+		}
+		return items[i].Count > items[j].Count
+	})
+	if len(items) > n {
+		items = items[:n]
+	}
+	return items
 }

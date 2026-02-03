@@ -87,10 +87,14 @@ func SearchAvailableShipmentsHandler(apiClient *chrobinson.APIClient) fiber.Hand
 		}
 
 		// Save the shipment data to the database
-		for _, shipment := range searchResponse.Results {
-			if saveErr := chrobinson.SaveLoadToDB(db.DB, shipment); saveErr != nil {
-				log.WithError(saveErr).Error("Failed to save shipment to DB")
-				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": saveErr.Error()})
+		// Prototype: skip persisting loads unless explicitly enabled.
+		// Set `SAVE_SHIPMENTS_TO_DB=true` to restore the old behavior.
+		if v := strings.ToLower(strings.TrimSpace(config.GetEnv("SAVE_SHIPMENTS_TO_DB", "false"))); v == "1" || v == "true" || v == "yes" {
+			for _, shipment := range searchResponse.Results {
+				if saveErr := chrobinson.SaveLoadToDB(db.DB, shipment); saveErr != nil {
+					log.WithError(saveErr).Error("Failed to save shipment to DB")
+					return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": saveErr.Error()})
+				}
 			}
 		}
 

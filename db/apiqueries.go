@@ -15,7 +15,8 @@ var openaiClient *openai.Client
 func init() {
 	apiKey := os.Getenv("OPENAI_API_KEY")
 	if apiKey == "" {
-		log.Fatalf("OpenAI API key not found in environment variables")
+		log.Warn("OpenAI API key not found in environment variables; OpenAI features disabled")
+		return
 	}
 
 	openaiClient = openai.NewClient(apiKey)

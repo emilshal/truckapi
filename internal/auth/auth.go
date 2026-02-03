@@ -2,12 +2,16 @@ package auth
 
 import (
 	"context"
+	"net/http"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 	"truckapi/internal/types"
 	"truckapi/pkg/config"
 
 	log "github.com/sirupsen/logrus"
+	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/clientcredentials"
 )
 
@@ -55,10 +59,29 @@ func GenerateToken() (*types.TokenResponse, error) {
 		TokenURL:     tokenURL,
 	}
 
-	log.Infof("Requesting token with ClientID: %s, TokenURL: %s", auth.ClientID, tokenURL)
+	log.WithFields(log.Fields{
+		"client_id":  auth.ClientID,
+		"token_url":  tokenURL,
+		"audience":   auth.Audience,
+		"grant_type": auth.GrantType,
+	}).Info("Requesting CHRob token")
 
-	// Obtain a token source from the OAuth 2.0 package (which automatically refreshes the token when it expires)
-	tokenSource := clientConfig.TokenSource(context.Background())
+	timeout := 20 * time.Second
+	if v := config.GetEnv("CHROB_TOKEN_TIMEOUT_SECONDS", ""); v != "" {
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n > 0 {
+			timeout = time.Duration(n) * time.Second
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	// Ensure token requests cannot hang forever by providing an HTTP client with timeouts.
+	ctx = context.WithValue(ctx, oauth2.HTTPClient, &http.Client{
+		Timeout: timeout,
+	})
+
+	// Obtain a token source (refreshes token when expired)
+	tokenSource := clientConfig.TokenSource(ctx)
 
 	// Get an access token from the Token Source
 	token, err := tokenSource.Token()
@@ -95,7 +118,10 @@ func (store *TokenStore) SetToken(token string, expiresIn time.Duration) {
 		log.Errorf("Failed to save updated environment variables to .env file: %v", err)
 	}
 
-	log.Infof("Token set and saved: %s", token)
+	log.WithFields(log.Fields{
+		"expires_in_seconds": int(expiresIn.Seconds()),
+		"token_length":       len(token),
+	}).Info("Token set and saved")
 }
 
 // GetToken returns the current token if it's not expired.
@@ -106,8 +132,8 @@ func (store *TokenStore) GetToken() (string, bool) {
 	defer store.Unlock()
 	// If the current time is earlier than the expiration time then we use the current token
 	if time.Now().UTC().Before(store.expiresAt.UTC()) {
-		log.Info("Using existing token") // Log that the existing token is used
-		return store.token, true         // Return the token and true bool indicating the token is valid
+		log.Debug("Using existing token") // Avoid spamming logs at info level
+		return store.token, true          // Return the token and true bool indicating the token is valid
 	}
 	return "", false // Return an empty string and a false bool if token is expired.
 }

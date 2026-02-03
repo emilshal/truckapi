@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"time"
 	"truckapi/internal/auth"
+	"truckapi/internal/httpdebug"
 
 	"github.com/gofiber/fiber/v2"
 
@@ -26,6 +27,9 @@ type APIClient struct {
 func NewAPIClient(baseURL string, tokenStore *auth.TokenStore, httpClient *http.Client) *APIClient {
 	if httpClient == nil {
 		httpClient = &http.Client{} // Use default client if none provided
+	}
+	if httpClient.Transport == nil {
+		httpClient.Transport = httpdebug.NewTransport(http.DefaultTransport)
 	}
 	return &APIClient{
 		BaseURL:    baseURL,
@@ -89,7 +93,7 @@ func (client *APIClient) GetEvents(from, to time.Time, queryParameters map[strin
 
 	// Check for a successful response
 	if resp.StatusCode != http.StatusOK {
-		return nil, fiber.NewError(resp.StatusCode, "API request failed with status code: %d")
+		return nil, fiber.NewError(resp.StatusCode, fmt.Sprintf("API request failed with status code: %d", resp.StatusCode))
 	}
 
 	// Parse the response body
@@ -142,8 +146,9 @@ func (client *APIClient) SearchAvailableShipments(request AvailableShipmentSearc
 	httpRequest.Header.Set("Content-Type", "application/json")
 
 	// Before sending the request
-	log.Infof("Sending request to %s with body: %s", url, string(requestBody))
-	log.Infof("Request headers: Authorization: Bearer %s, Content-Type: application/json", token)
+	log.WithFields(log.Fields{
+		"url": url,
+	}).Debug("Sending CHRob SearchAvailableShipments request")
 
 	// Make the HTTP request
 	response, err := client.HTTPClient.Do(httpRequest)
@@ -154,20 +159,45 @@ func (client *APIClient) SearchAvailableShipments(request AvailableShipmentSearc
 	defer response.Body.Close()
 
 	// After receiving the response
-	log.Infof("Received response with status code: %d", response.StatusCode)
-	log.Infof("Response body: %v", response)
+	log.WithFields(log.Fields{
+		"url":    url,
+		"status": response.StatusCode,
+	}).Debug("Received CHRob SearchAvailableShipments response")
 
 	// Check for a successful response
 	if response.StatusCode != http.StatusOK {
 		responseBodyBytes, _ := ioutil.ReadAll(response.Body)
-		log.Errorf("API request failed with status code %d: %s", response.StatusCode, string(responseBodyBytes))
+		log.WithFields(log.Fields{
+			"url":    url,
+			"status": response.StatusCode,
+		}).Errorf("CHRob SearchAvailableShipments failed: %s", string(responseBodyBytes))
 		return nil, fiber.NewError(response.StatusCode, "Failed to search for available shipments")
 	}
 
-	// Parse the response body
+	// Parse the response body. We read bytes first so we can log useful diagnostics
+	// if the server returns a truncated payload (e.g., "unexpected EOF").
+	responseBodyBytes, err := io.ReadAll(response.Body)
+	if err != nil {
+		log.WithError(err).Error("Failed to read CHRob response body")
+		return nil, err
+	}
+
 	var searchResponse AvailableShipmentSearchResponse
-	if err := json.NewDecoder(response.Body).Decode(&searchResponse); err != nil {
-		log.WithError(err).Error("Failed to decode response body")
+	if err := json.Unmarshal(responseBodyBytes, &searchResponse); err != nil {
+		const maxLog = 4096
+		snippet := string(responseBodyBytes)
+		truncated := false
+		if len(snippet) > maxLog {
+			snippet = snippet[:maxLog]
+			truncated = true
+		}
+		log.WithError(err).WithFields(log.Fields{
+			"url":          url,
+			"status":       response.StatusCode,
+			"body_bytes":   len(responseBodyBytes),
+			"body_snippet": snippet,
+			"truncated":    truncated,
+		}).Error("Failed to decode CHRob response body")
 		return nil, err
 	}
 
@@ -409,7 +439,7 @@ func CreateSearchRequestsForTrucks(apiClient *APIClient, trucks []Truck, locatio
 			PageIndex:  0,
 			PageSize:   100,
 			RegionCode: "NA",
-			Modes: []string{"T", "L", "F", "B", "V", "R", "O"},
+			Modes:      []string{"F", "L", "R", "V", "H"},
 			OriginRadiusSearch: &RadiusSearch{
 				Coordinate: Coordinate{
 					Lat: location.Lat,

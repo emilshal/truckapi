@@ -228,12 +228,22 @@ type Radius struct {
 	Value         int    `json:"value"`
 }
 type Location struct {
+	// Common fields we map into LoaderOrder.
 	City    string `json:"city"`
-	Country string `json:"country"`
-	Zip     string `json:"zip"`
 	State   string `json:"state"`
-	// Lat     float64 `json:"lat"`
-	// Lon     float64 `json:"lon"`
+	Zip     string `json:"zip"`
+	Country string `json:"country"`
+
+	// CHRob API uses *Code/*PostalCode naming; keep these for parsing.
+	// Mark as `gorm:"-"` so enabling DB migrations later won't add columns by accident.
+	WarehouseCode   string     `json:"warehouseCode" gorm:"-"`
+	StateCode       string     `json:"stateCode" gorm:"-"`
+	PostalCode      string     `json:"postalCode" gorm:"-"`
+	CountryCode     string     `json:"countryCode" gorm:"-"`
+	County          string     `json:"county" gorm:"-"`
+	Coordinate      Coordinate `json:"coordinate" gorm:"-"`
+	Name            string     `json:"name" gorm:"-"`
+	ScheduleRequest string     `json:"scheduleRequest" gorm:"-"`
 }
 type Range struct {
 	UnitOfMeasure string  `json:"unitOfMeasure"`
