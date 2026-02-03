@@ -147,6 +147,19 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 				}
 			}
 
+			// If the API ignores pageIndex or returns a repeated page, we can end up in an infinite loop.
+			// Break when this page contains no new unique loads.
+			if pageIndex > 0 && len(pageOrders) == 0 {
+				log.WithFields(log.Fields{
+					"lat":        lat,
+					"lng":        lng,
+					"pageIndex":  pageIndex,
+					"pageSize":   searchRequest.PageSize,
+					"totalCount": searchResponse.TotalCount,
+				}).Warn("CHRob paging yielded 0 new unique loads; stopping pagination for location")
+				break
+			}
+
 			// Prototype-test UI mode: do not POST to Loader API.
 			// Instead, load the in-memory feed so the UI can page through results.
 			if feed != nil {

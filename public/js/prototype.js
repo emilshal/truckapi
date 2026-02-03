@@ -13,6 +13,7 @@
     countLabel: document.getElementById("countLabel"),
     prevBtn: document.getElementById("prevBtn"),
     nextBtn: document.getElementById("nextBtn"),
+    refreshBtn: document.getElementById("refreshBtn"),
     btnCHROB: document.getElementById("btnCHROB"),
     btnTS: document.getElementById("btnTS"),
   };
@@ -118,6 +119,8 @@
     state.page = Math.min(totalPages(), state.page + 1);
     render();
   });
+
+  els.refreshBtn.addEventListener("click", () => render());
 
   setActiveSource("CHROBINSON");
   render();
