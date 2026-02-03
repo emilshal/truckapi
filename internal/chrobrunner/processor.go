@@ -29,10 +29,13 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 		searchErrors       int
 		totalShipments     int
 		totalEnqueued      int
+		totalPosted        int
 		companyNameCounts  = map[string]int{}
 		originNameCounts   = map[string]int{}
 		destNameCounts     = map[string]int{}
 	)
+
+	loaderClient := loader.NewAPIClientFromEnv(nil)
 
 	for _, loc := range locations {
 		lat, err := parseFloatField(loc.Latitude)
@@ -115,12 +118,20 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 				destNameCounts[name]++
 			}
 
-			// Prototype: do not POST to Loader API. Send to in-memory UI feed instead.
-			// (Old Loader API endpoint: https://core.hfield.net/api/v1/loader/orders)
-			if feed != nil {
-				feed.Add(orderPayload)
-				totalEnqueued++
+			if err := loaderClient.CreateOrder(orderPayload); err != nil {
+				log.WithError(err).WithFields(log.Fields{
+					"source":      orderPayload.Source,
+					"orderNumber": orderPayload.OrderNumber,
+				}).Error("Failed to post order to Loader API")
+				continue
 			}
+			totalPosted++
+
+			// Prototype UI feed is disabled on `prototype-test`.
+			// if feed != nil {
+			// 	feed.Add(orderPayload)
+			// 	totalEnqueued++
+			// }
 		}
 	}
 
@@ -130,6 +141,7 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 		"search_errors":          searchErrors,
 		"shipments_total":        totalShipments,
 		"enqueued_total":         totalEnqueued,
+		"posted_total":           totalPosted,
 		"contact_company_unique": len(companyNameCounts),
 		"origin_name_unique":     len(originNameCounts),
 		"dest_name_unique":       len(destNameCounts),

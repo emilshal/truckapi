@@ -35,6 +35,8 @@ const (
 	TruckstopPassword      = "TRUCKSTOP_PASSWORD"
 	TruckstopIntegrationID = "TRUCKSTOP_INTEGRATION_ID"
 	TruckstopLoadSearchURL = "TRUCKSTOP_LOAD_SEARCH_URL"
+	LoaderAPIBaseURL       = "LOADER_API_BASE_URL"
+	LoaderAPIKey           = "LOADER_API_KEY"
 )
 
 var (
@@ -52,6 +54,8 @@ var (
 		"CHROB_CARRIER_CODE":  "T6263835",
 		"API_KEY":             "",
 		"OPENAI_API_KEY":      "",
+		LoaderAPIBaseURL:      "https://core.hfield.net",
+		LoaderAPIKey:          "loaderBMwuIUZKtyH8fetLykDch07dxfciUZZ8lrGqOfmVaAjnXAhcwIRIdBCyhg",
 	}
 
 	EnvKeys = []string{
@@ -70,6 +74,8 @@ var (
 		TruckstopPassword,
 		TruckstopIntegrationID,
 		TruckstopLoadSearchURL,
+		LoaderAPIBaseURL,
+		LoaderAPIKey,
 	}
 
 	EnvFilePath string

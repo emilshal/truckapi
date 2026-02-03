@@ -15,6 +15,7 @@ import (
 
 	"truckapi/internal/chrobinson"
 	"truckapi/internal/httpdebug"
+	"truckapi/pkg/config"
 
 	"github.com/gofiber/websocket/v2"
 	log "github.com/sirupsen/logrus"
@@ -595,7 +596,8 @@ func HandleWebSocketConnection(apiClient *chrobinson.APIClient, conn *websocket.
 
 // FetchLoaderLocations calls the loader API and returns locations for a given source (e.g. TRUCKSTOP, CHROB).
 func FetchLoaderLocations(source string) ([]chrobinson.LoaderLocation, error) {
-	url := fmt.Sprintf("https://core.hfield.net/api/v1/loader/locations?source=%s", source)
+	baseURL := strings.TrimRight(config.GetEnv(config.LoaderAPIBaseURL, "https://core.hfield.net"), "/")
+	url := fmt.Sprintf("%s/api/v1/loader/locations?source=%s", baseURL, source)
 
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
@@ -603,7 +605,7 @@ func FetchLoaderLocations(source string) ([]chrobinson.LoaderLocation, error) {
 	}
 
 	// Add required headers
-	req.Header.Add("X-API-KEY", "loaderBMwuIUZKtyH8fetLykDch07dxfciUZZ8lrGqOfmVaAjnXAhcwIRIdBCyhg")
+	req.Header.Add("X-API-KEY", config.GetEnv(config.LoaderAPIKey, ""))
 
 	client := &http.Client{
 		Timeout:   15 * time.Second,
