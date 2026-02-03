@@ -6,10 +6,11 @@ import (
 	"truckapi/db"
 	"truckapi/internal/auth"
 	"truckapi/internal/chrobinson"
+	"truckapi/internal/chrobrunner"
+	"truckapi/internal/routes"
 	"truckapi/internal/truckstop"
 	"truckapi/pkg/config"
 
-	"github.com/gofiber/fiber/v2"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -52,11 +53,10 @@ func main() {
 	truckstop.StartTruckstopRunner(truckstopClient)
 
 	// Start periodic CHRob runner
-	chrobinson.StartChrobRunner(apiClient)
+	chrobrunner.StartChrobRunner(apiClient)
 
-	// Initialize Fiber app
-	fiberApp := fiber.New()
-	// fiberApp = routes.InitializeRoutes(apiClient)
+	// Initialize Fiber app with API routes
+	fiberApp := routes.InitializeRoutes(apiClient)
 	fiberApp.Static("/", "./public")
 
 	// Start the Fiber server

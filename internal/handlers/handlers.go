@@ -4,6 +4,7 @@ import (
 	"strings"
 	"truckapi/db"
 	"truckapi/internal/chrobinson"
+	"truckapi/pkg/config"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/sirupsen/logrus"
@@ -174,6 +175,20 @@ func BookLoadHandler(apiClient *chrobinson.APIClient) fiber.Handler {
 			})
 		}
 
+		if bookingRequest.CarrierCode == "" {
+			bookingRequest.CarrierCode = config.GetEnv(config.CHRobCarrierCode, "")
+		}
+		if bookingRequest.LoadNumber == 0 || bookingRequest.CarrierCode == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": "loadNumber and carrierCode are required",
+			})
+		}
+		if len(bookingRequest.AvailableLoadCosts) == 0 {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": "availableLoadCosts must include at least one item",
+			})
+		}
+
 		// Use HandleAPICall to make the API call and handle token refresh if needed.
 		err := chrobinson.HandleAPICall(apiClient, func() error {
 			return apiClient.BookLoad(bookingRequest)
@@ -330,6 +345,18 @@ func SubmitLoadOfferHandler(apiClient *chrobinson.APIClient) fiber.Handler {
 			})
 		}
 
+		if offerRequest.CarrierCode == "" {
+			offerRequest.CarrierCode = config.GetEnv(config.CHRobCarrierCode, "")
+		}
+		if offerRequest.CurrencyCode == "" {
+			offerRequest.CurrencyCode = "USD"
+		}
+		if loadNumber == "" || offerRequest.CarrierCode == "" || offerRequest.OfferPrice <= 0 {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": "loadNumber, carrierCode, and offerPrice are required",
+			})
+		}
+
 		err := chrobinson.HandleAPICall(apiClient, func() error {
 			return apiClient.SubmitLoadOffer(loadNumber, offerRequest)
 		})
@@ -348,6 +375,46 @@ func SubmitLoadOfferHandler(apiClient *chrobinson.APIClient) fiber.Handler {
 
 		return c.Status(fiber.StatusAccepted).JSON(fiber.Map{
 			"message": "Load offer submitted successfully",
+		})
+	}
+}
+
+// MarkBookedHandler is a convenience endpoint that proxies to CHRob booking.
+func MarkBookedHandler(apiClient *chrobinson.APIClient) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		var bookingRequest chrobinson.LoadBookingRequest
+		if err := c.BodyParser(&bookingRequest); err != nil {
+			log.WithError(err).Error("Failed to parse booking request body")
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": "Invalid request data",
+			})
+		}
+		if bookingRequest.CarrierCode == "" {
+			bookingRequest.CarrierCode = config.GetEnv(config.CHRobCarrierCode, "")
+		}
+		if bookingRequest.LoadNumber == 0 || bookingRequest.CarrierCode == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": "loadNumber and carrierCode are required",
+			})
+		}
+		if len(bookingRequest.AvailableLoadCosts) == 0 {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": "availableLoadCosts must include at least one item",
+			})
+		}
+
+		err := chrobinson.HandleAPICall(apiClient, func() error {
+			return apiClient.BookLoad(bookingRequest)
+		})
+		if err != nil {
+			log.WithError(err).Error("Failed to mark load booked")
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error": "Failed to mark load booked",
+			})
+		}
+
+		return c.Status(fiber.StatusAccepted).JSON(fiber.Map{
+			"message": "Load marked as booked",
 		})
 	}
 }

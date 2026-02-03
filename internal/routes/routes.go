@@ -26,6 +26,7 @@ func InitializeRoutes(apiClient *chrobinson.APIClient) *fiber.App {
 
 	//Post endpoint to book a load
 	fiberApp.Post("/v1/shipments/books", handlers.BookLoadHandler(apiClient))
+	fiberApp.Post("/v1/shipments/mark-booked", handlers.MarkBookedHandler(apiClient))
 
 	//Post endpoint to submit an offer
 	fiberApp.Post("/v1/shipments/:loadNumber/offers", handlers.SubmitLoadOfferHandler(apiClient))

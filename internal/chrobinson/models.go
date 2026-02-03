@@ -782,11 +782,11 @@ type LoadCost struct {
 }
 
 type LoadOfferRequest struct {
-	CarrierCode  string `json:"carrierCode"`
-	OfferPrice   int    `json:"offerPrice"`
-	OfferNote    string `json:"offerNote,omitempty"`
-	CurrencyCode string `json:"currencyCode,omitempty"`
-	// AvailableLoadCost int    `json:"availableLoadCost"`
+	CarrierCode       string `json:"carrierCode"`
+	OfferPrice        int    `json:"offerPrice"`
+	OfferNote         string `json:"offerNote,omitempty"`
+	CurrencyCode      string `json:"currencyCode,omitempty"`
+	AvailableLoadCost int    `json:"availableLoadCost,omitempty"`
 }
 
 // OfferResponse represents the structure for an offer response callback.

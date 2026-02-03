@@ -1,4 +1,4 @@
-package chrobinson
+package chrobrunner
 
 import (
 	"bytes"
@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 	"truckapi/db"
+	"truckapi/internal/chrobinson"
 	"truckapi/internal/loader"
 
 	log "github.com/sirupsen/logrus"
@@ -19,7 +20,7 @@ const (
 	loaderAPIKey         = "loaderBMwuIUZKtyH8fetLykDch07dxfciUZZ8lrGqOfmVaAjnXAhcwIRIdBCyhg"
 )
 
-func ChrobSearchProcess(client *APIClient) error {
+func ChrobSearchProcess(client *chrobinson.APIClient) error {
 	locations, err := db.FetchLoaderLocations("TRUCKSTOP")
 	if err != nil {
 		log.WithError(err).Error("Failed to fetch locations from Loader API")
@@ -43,30 +44,30 @@ func ChrobSearchProcess(client *APIClient) error {
 		fromDate := time.Now().Format("2006-01-02")
 		toDate := time.Now().AddDate(0, 0, 10).Format("2006-01-02")
 
-		searchRequest := AvailableShipmentSearchRequest{
+		searchRequest := chrobinson.AvailableShipmentSearchRequest{
 			PageIndex:  0,
 			PageSize:   100,
 			RegionCode: "NA",
 			Modes:      []string{"T", "L", "F", "B", "V", "R", "O"},
-			OriginRadiusSearch: &RadiusSearch{
-				Coordinate: Coordinate{Lat: lat, Lon: lng},
-				Radius: Radius{
+			OriginRadiusSearch: &chrobinson.RadiusSearch{
+				Coordinate: chrobinson.Coordinate{Lat: lat, Lon: lng},
+				Radius: chrobinson.Radius{
 					Value:         250,
 					UnitOfMeasure: "Standard",
 				},
 			},
-			AvailableForPickUpByDateRange: &DateRange{
+			AvailableForPickUpByDateRange: &chrobinson.DateRange{
 				Min: fromDate,
 				Max: toDate,
 			},
-			SortCriteria: &SortCriteria{
+			SortCriteria: &chrobinson.SortCriteria{
 				Field:     "LoadNumber",
 				Direction: "ascending",
 			},
 		}
 
-		var searchResponse *AvailableShipmentSearchResponse
-		err = HandleAPICall(client, func() error {
+		var searchResponse *chrobinson.AvailableShipmentSearchResponse
+		err = chrobinson.HandleAPICall(client, func() error {
 			resp, err := client.SearchAvailableShipments(searchRequest)
 			if err != nil {
 				return err
@@ -119,7 +120,7 @@ func ChrobSearchProcess(client *APIClient) error {
 	return nil
 }
 
-func StartChrobRunner(client *APIClient) {
+func StartChrobRunner(client *chrobinson.APIClient) {
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
@@ -132,7 +133,7 @@ func StartChrobRunner(client *APIClient) {
 	}()
 }
 
-func mapShipmentToLoaderOrder(shipment ShipmentInfo) loader.LoaderOrder {
+func mapShipmentToLoaderOrder(shipment chrobinson.ShipmentInfo) loader.LoaderOrder {
 	pickupDate := pickBestDateTime(
 		shipment.CalculatedPickUpByDateTime,
 		shipment.PickUpByDate,
@@ -257,7 +258,7 @@ func parseDateTime(value string) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-func sumLoadCosts(costs []AvailableLoadCost) float64 {
+func sumLoadCosts(costs []chrobinson.AvailableLoadCost) float64 {
 	if len(costs) == 0 {
 		return 0
 	}
@@ -268,7 +269,7 @@ func sumLoadCosts(costs []AvailableLoadCost) float64 {
 	return total
 }
 
-func mapTruckType(shipment ShipmentInfo, length float64) (string, int, string) {
+func mapTruckType(shipment chrobinson.ShipmentInfo, length float64) (string, int, string) {
 	original := firstNonEmpty(shipment.SpecializedEquipment.Description, shipment.SpecializedEquipment.Code)
 	if original == "" {
 		original = "UNKNOWN"
@@ -289,7 +290,7 @@ func mapTruckType(shipment ShipmentInfo, length float64) (string, int, string) {
 	return "", 0, original
 }
 
-func contactMethodValue(contact Contact, method string) string {
+func contactMethodValue(contact chrobinson.Contact, method string) string {
 	for _, m := range contact.ContactMethods {
 		if strings.EqualFold(m.Method, method) && m.Value != "" {
 			return m.Value

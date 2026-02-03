@@ -46,4 +46,33 @@ type LoaderOrder struct {
 	Quantity         int    `json:"quantity"`
 	Stops            int    `json:"stops"`
 	TruckCompanyName string `json:"truckCompanyName"`
+
+	// CHRob-specific metadata used for offer/book flows.
+	CarrierCode        string          `json:"carrierCode,omitempty"`
+	ExternalLoadNumber int             `json:"externalLoadNumber,omitempty"`
+	AvailableLoadCosts []LoadCostMeta  `json:"availableLoadCosts,omitempty"`
+	EmptyDateTime      string          `json:"emptyDateTime,omitempty"`
+	EmptyLocation      EmptyLocation   `json:"emptyLocation,omitempty"`
+	RateConfirmation   RateConfirmMeta `json:"rateConfirmation,omitempty"`
+}
+
+type LoadCostMeta struct {
+	Type              string  `json:"type,omitempty"`
+	Code              string  `json:"code,omitempty"`
+	Description       string  `json:"description,omitempty"`
+	SourceCostPerUnit float64 `json:"sourceCostPerUnit,omitempty"`
+	Units             int     `json:"units,omitempty"`
+	CurrencyCode      string  `json:"currencyCode,omitempty"`
+}
+
+type EmptyLocation struct {
+	City    string `json:"city,omitempty"`
+	State   string `json:"state,omitempty"`
+	Country string `json:"country,omitempty"`
+	Zip     string `json:"zip,omitempty"`
+}
+
+type RateConfirmMeta struct {
+	Email string `json:"email,omitempty"`
+	Name  string `json:"name,omitempty"`
 }
