@@ -1,9 +1,11 @@
 package chrobrunner
 
 import (
+	"context"
 	"encoding/hex"
 	"fmt"
 	"hash/fnv"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -57,6 +59,21 @@ func binaryPutUint64(dst []byte, v uint64) {
 	dst[7] = byte(v)
 }
 
+func envTruthy(key string, def bool) bool {
+	v, ok := os.LookupEnv(key)
+	if !ok {
+		return def
+	}
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "y", "on":
+		return true
+	case "0", "false", "no", "n", "off":
+		return false
+	default:
+		return def
+	}
+}
+
 func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error {
 	locations, err := db.FetchLoaderLocations("TRUCKSTOP")
 	if err != nil {
@@ -77,6 +94,11 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 		originNameCounts   = map[string]int{}
 		destNameCounts     = map[string]int{}
 	)
+
+	loaderClient := loader.NewAPIClientFromEnv(nil)
+	postPool := loader.PostPool{Client: loaderClient}
+	enableLoaderPost := envTruthy("ENABLE_LOADER_POST", true)
+	enableUIFeed := envTruthy("ENABLE_UI_FEED", true)
 
 	for _, loc := range locations {
 		lat, err := parseFloatField(loc.Latitude)
@@ -252,9 +274,28 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 				}).Warn("CHRob page produced results but none were enqueued (all duplicates)")
 			}
 
-			// Prototype-test UI mode: do not POST to Loader API.
-			// Instead, load the in-memory feed so the UI can page through results.
-			if feed != nil {
+			if enableLoaderPost && len(pageOrders) > 0 {
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+				ok, errs := postPool.PostAll(ctx, pageOrders)
+				cancel()
+				totalPosted += ok
+				if len(errs) > 0 {
+					for _, postErr := range errs {
+						log.WithError(postErr).Error("Failed to post order to Loader API")
+					}
+				}
+				log.WithFields(log.Fields{
+					"pageIndex":    pageIndex,
+					"pageOrders":   len(pageOrders),
+					"posted_ok":    ok,
+					"posted_fail":  len(errs),
+					"location_lat": lat,
+					"location_lng": lng,
+				}).Info("CHRob Loader post summary")
+			}
+
+			// Also load the in-memory feed so the UI can page through results.
+			if enableUIFeed && feed != nil {
 				for _, o := range pageOrders {
 					feed.Add(o)
 					totalEnqueued++
@@ -267,7 +308,7 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 					"location_lng":    lng,
 					"location_source": "CHROBINSON",
 				}).Info("CHRob enqueued into UI feed")
-			} else {
+			} else if enableUIFeed && feed == nil {
 				log.WithFields(log.Fields{
 					"pageIndex":    pageIndex,
 					"location_lat": lat,
