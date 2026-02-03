@@ -152,6 +152,7 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 			}
 
 			if len(pageOrders) > 0 {
+				postStart := time.Now()
 				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 				ok, errs := postPool.PostAll(ctx, pageOrders)
 				cancel()
@@ -162,6 +163,16 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 						log.WithError(postErr).Error("Failed to post order to Loader API")
 					}
 				}
+
+				log.WithFields(log.Fields{
+					"pageIndex":    pageIndex,
+					"pageOrders":   len(pageOrders),
+					"posted_ok":    ok,
+					"posted_fail":  len(errs),
+					"duration_ms":  time.Since(postStart).Milliseconds(),
+					"location_lat": lat,
+					"location_lng": lng,
+				}).Info("CHRob page post summary")
 			}
 
 			// Prototype UI feed is disabled on `prototype-test`.

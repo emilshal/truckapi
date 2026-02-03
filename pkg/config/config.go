@@ -58,7 +58,7 @@ var (
 		"OPENAI_API_KEY":      "",
 		LoaderAPIBaseURL:      "https://core.hfield.net",
 		LoaderAPIKey:          "loaderBMwuIUZKtyH8fetLykDch07dxfciUZZ8lrGqOfmVaAjnXAhcwIRIdBCyhg",
-		LoaderPostWorkers:     "8",
+		LoaderPostWorkers:     "16",
 		LoaderPostMaxRetries:  "3",
 	}
 

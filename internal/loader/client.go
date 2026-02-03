@@ -92,12 +92,13 @@ func (client *APIClient) CreateOrder(order LoaderOrder) error {
 		return &APIError{StatusCode: resp.StatusCode, Body: string(body)}
 	}
 
+	// Per-order success logs can be extremely noisy at scale; keep them at debug.
 	log.WithFields(log.Fields{
 		"source":       order.Source,
 		"orderNumber":  order.OrderNumber,
 		"status_code":  resp.StatusCode,
 		"loaderApiUrl": url,
-	}).Info("✅ Posted order to Loader API")
+	}).Debug("✅ Posted order to Loader API")
 
 	return nil
 }
@@ -118,14 +119,23 @@ func (p PostPool) postWithRetry(ctx context.Context, order LoaderOrder) error {
 
 	baseDelay := 250 * time.Millisecond
 	for attempt := 0; ; attempt++ {
+		attemptStart := time.Now()
 		err := p.Client.CreateOrder(order)
 		if err == nil {
+			log.WithFields(log.Fields{
+				"orderNumber": order.OrderNumber,
+				"source":      order.Source,
+				"attempt":     attempt + 1,
+				"duration_ms": time.Since(attemptStart).Milliseconds(),
+			}).Debug("Loader post succeeded")
 			return nil
 		}
 
 		// Decide if we should retry.
 		retry := false
+		statusCode := 0
 		if apiErr, ok := err.(*APIError); ok {
+			statusCode = apiErr.StatusCode
 			if apiErr.StatusCode == http.StatusTooManyRequests || apiErr.StatusCode >= 500 {
 				retry = true
 			}
@@ -135,6 +145,13 @@ func (p PostPool) postWithRetry(ctx context.Context, order LoaderOrder) error {
 		}
 
 		if !retry || attempt >= maxRetries {
+			log.WithError(err).WithFields(log.Fields{
+				"orderNumber": order.OrderNumber,
+				"source":      order.Source,
+				"attempt":     attempt + 1,
+				"status_code": statusCode,
+				"retry":       retry,
+			}).Error("Loader post failed (giving up)")
 			return err
 		}
 
@@ -146,8 +163,21 @@ func (p PostPool) postWithRetry(ctx context.Context, order LoaderOrder) error {
 		jitter := time.Duration(rand.Int63n(int64(delay / 3)))
 		sleep := delay - jitter
 
+		log.WithError(err).WithFields(log.Fields{
+			"orderNumber": order.OrderNumber,
+			"source":      order.Source,
+			"attempt":     attempt + 1,
+			"status_code": statusCode,
+			"sleep_ms":    sleep.Milliseconds(),
+		}).Warn("Loader post failed; retrying")
+
 		select {
 		case <-ctx.Done():
+			log.WithError(ctx.Err()).WithFields(log.Fields{
+				"orderNumber": order.OrderNumber,
+				"source":      order.Source,
+				"attempt":     attempt + 1,
+			}).Error("Loader post canceled by context")
 			return ctx.Err()
 		case <-time.After(sleep):
 		}
@@ -168,7 +198,7 @@ func (p PostPool) PostAll(ctx context.Context, orders []LoaderOrder) (int, []err
 			}
 		}
 		if workers <= 0 {
-			workers = 8
+			workers = 16
 		}
 	}
 
@@ -199,6 +229,14 @@ func (p PostPool) PostAll(ctx context.Context, orders []LoaderOrder) (int, []err
 		}
 	}
 
+	start := time.Now()
+	log.WithFields(log.Fields{
+		"orders":      len(orders),
+		"workers":     workers,
+		"queue_size":  queueSize,
+		"max_retries": maxRetries,
+	}).Info("Loader post batch start")
+
 	for i := 0; i < workers; i++ {
 		go worker()
 	}
@@ -219,6 +257,12 @@ func (p PostPool) PostAll(ctx context.Context, orders []LoaderOrder) (int, []err
 	for i := 0; i < len(orders); i++ {
 		select {
 		case <-ctx.Done():
+			log.WithError(ctx.Err()).WithFields(log.Fields{
+				"ok":          okCount,
+				"failed":      len(errs),
+				"total":       len(orders),
+				"duration_ms": time.Since(start).Milliseconds(),
+			}).Error("Loader post batch canceled")
 			return okCount, append(errs, ctx.Err())
 		case r := <-results:
 			if r.err != nil {
@@ -228,6 +272,13 @@ func (p PostPool) PostAll(ctx context.Context, orders []LoaderOrder) (int, []err
 			}
 		}
 	}
+
+	log.WithFields(log.Fields{
+		"ok":          okCount,
+		"failed":      len(errs),
+		"total":       len(orders),
+		"duration_ms": time.Since(start).Milliseconds(),
+	}).Info("Loader post batch complete")
 
 	return okCount, errs
 }
