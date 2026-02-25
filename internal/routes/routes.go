@@ -69,6 +69,13 @@ func InitializeRoutes(apiClient *chrobinson.APIClient, feed *uifeed.Store) *fibe
 	// Prototype feed: show raw mapped orders in UI.
 	fiberApp.Get("/api/orders", handlers.UIOrdersFeedHandler(feed))
 
+	// Debug mock Loader receiver for duplicate testing.
+	// Point `LOADER_ORDERS_BASE_URL` to `http://127.0.0.1:<port>/debug/mock-loader`.
+	fiberApp.Post("/debug/mock-loader/api/v1/loader/orders", handlers.MockLoaderCreateOrderHandler())
+	fiberApp.Get("/debug/mock-loader/summary", handlers.MockLoaderSummaryHandler())
+	fiberApp.Get("/debug/mock-loader/orders", handlers.MockLoaderListHandler())
+	fiberApp.Post("/debug/mock-loader/reset", handlers.MockLoaderResetHandler())
+
 	// Health check endpoint
 	fiberApp.Get("/health", func(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusOK).JSON(fiber.Map{"status": "OK"})

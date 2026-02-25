@@ -36,6 +36,7 @@ const (
 	TruckstopIntegrationID = "TRUCKSTOP_INTEGRATION_ID"
 	TruckstopLoadSearchURL = "TRUCKSTOP_LOAD_SEARCH_URL"
 	LoaderAPIBaseURL       = "LOADER_API_BASE_URL"
+	LoaderOrdersBaseURL    = "LOADER_ORDERS_BASE_URL"
 	LoaderAPIKey           = "LOADER_API_KEY"
 	LoaderPostWorkers      = "LOADER_POST_WORKERS"
 	LoaderPostMaxRetries   = "LOADER_POST_MAX_RETRIES"
@@ -57,6 +58,7 @@ var (
 		"API_KEY":             "",
 		"OPENAI_API_KEY":      "",
 		LoaderAPIBaseURL:      "https://core.hfield.net",
+		LoaderOrdersBaseURL:   "",
 		LoaderAPIKey:          "loaderBMwuIUZKtyH8fetLykDch07dxfciUZZ8lrGqOfmVaAjnXAhcwIRIdBCyhg",
 		LoaderPostWorkers:     "16",
 		LoaderPostMaxRetries:  "3",
@@ -79,6 +81,7 @@ var (
 		TruckstopIntegrationID,
 		TruckstopLoadSearchURL,
 		LoaderAPIBaseURL,
+		LoaderOrdersBaseURL,
 		LoaderAPIKey,
 		LoaderPostWorkers,
 		LoaderPostMaxRetries,

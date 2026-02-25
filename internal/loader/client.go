@@ -50,8 +50,12 @@ func NewAPIClient(baseURL, apiKey string, httpClient *http.Client) *APIClient {
 }
 
 func NewAPIClientFromEnv(httpClient *http.Client) *APIClient {
+	baseURL := strings.TrimSpace(config.GetEnv(config.LoaderOrdersBaseURL, ""))
+	if baseURL == "" {
+		baseURL = config.GetEnv(config.LoaderAPIBaseURL, "https://core.hfield.net")
+	}
 	return NewAPIClient(
-		config.GetEnv(config.LoaderAPIBaseURL, "https://core.hfield.net"),
+		baseURL,
 		config.GetEnv(config.LoaderAPIKey, ""),
 		httpClient,
 	)
@@ -109,6 +113,12 @@ type PostPool struct {
 	MaxRetries int
 
 	QueueSize int
+}
+
+type PostResult struct {
+	Index int
+	Order LoaderOrder
+	Err   error
 }
 
 func (p PostPool) postWithRetry(ctx context.Context, order LoaderOrder) error {
@@ -187,8 +197,23 @@ func (p PostPool) postWithRetry(ctx context.Context, order LoaderOrder) error {
 // PostAll concurrently posts orders from `orders` and blocks until all have been processed.
 // It returns the number of successful posts and a slice of errors (one per failed post).
 func (p PostPool) PostAll(ctx context.Context, orders []LoaderOrder) (int, []error) {
+	results := p.PostAllDetailed(ctx, orders)
+	var okCount int
+	var errs []error
+	for _, r := range results {
+		if r.Err != nil {
+			errs = append(errs, r.Err)
+			continue
+		}
+		okCount++
+	}
+	return okCount, errs
+}
+
+// PostAllDetailed concurrently posts orders and returns per-order outcomes.
+func (p PostPool) PostAllDetailed(ctx context.Context, orders []LoaderOrder) []PostResult {
 	if p.Client == nil {
-		return 0, []error{fmt.Errorf("post pool client is nil")}
+		return []PostResult{{Err: fmt.Errorf("post pool client is nil")}}
 	}
 	workers := p.Workers
 	if workers <= 0 {
@@ -217,15 +242,26 @@ func (p PostPool) PostAll(ctx context.Context, orders []LoaderOrder) (int, []err
 	}
 
 	type result struct {
-		err error
+		index int
+		order LoaderOrder
+		err   error
 	}
 
-	jobs := make(chan LoaderOrder, queueSize)
+	type job struct {
+		index int
+		order LoaderOrder
+	}
+
+	jobs := make(chan job, queueSize)
 	results := make(chan result, queueSize)
 
 	worker := func() {
-		for order := range jobs {
-			results <- result{err: PostPool{Client: p.Client, MaxRetries: maxRetries}.postWithRetry(ctx, order)}
+		for item := range jobs {
+			results <- result{
+				index: item.index,
+				order: item.order,
+				err:   PostPool{Client: p.Client, MaxRetries: maxRetries}.postWithRetry(ctx, item.order),
+			}
 		}
 	}
 
@@ -243,42 +279,59 @@ func (p PostPool) PostAll(ctx context.Context, orders []LoaderOrder) (int, []err
 
 	go func() {
 		defer close(jobs)
-		for _, o := range orders {
+		for i, o := range orders {
 			select {
 			case <-ctx.Done():
 				return
-			case jobs <- o:
+			case jobs <- job{index: i, order: o}:
 			}
 		}
 	}()
 
-	var okCount int
-	var errs []error
+	outcomes := make([]PostResult, 0, len(orders))
 	for i := 0; i < len(orders); i++ {
 		select {
 		case <-ctx.Done():
+			var okCount int
+			var errCount int
+			for _, o := range outcomes {
+				if o.Err != nil {
+					errCount++
+				} else {
+					okCount++
+				}
+			}
 			log.WithError(ctx.Err()).WithFields(log.Fields{
 				"ok":          okCount,
-				"failed":      len(errs),
+				"failed":      errCount,
 				"total":       len(orders),
 				"duration_ms": time.Since(start).Milliseconds(),
 			}).Error("Loader post batch canceled")
-			return okCount, append(errs, ctx.Err())
+			return append(outcomes, PostResult{Err: ctx.Err()})
 		case r := <-results:
-			if r.err != nil {
-				errs = append(errs, r.err)
-			} else {
-				okCount++
-			}
+			outcomes = append(outcomes, PostResult{
+				Index: r.index,
+				Order: r.order,
+				Err:   r.err,
+			})
 		}
 	}
 
+	var okCount int
+	var errCount int
+	for _, o := range outcomes {
+		if o.Err != nil {
+			errCount++
+		} else {
+			okCount++
+		}
+	}
 	log.WithFields(log.Fields{
 		"ok":          okCount,
-		"failed":      len(errs),
+		"failed":      errCount,
 		"total":       len(orders),
 		"duration_ms": time.Since(start).Milliseconds(),
 	}).Info("Loader post batch complete")
 
-	return okCount, errs
+	return outcomes
 }

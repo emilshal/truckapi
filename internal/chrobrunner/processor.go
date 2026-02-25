@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"truckapi/db"
 	"truckapi/internal/chrobinson"
@@ -17,6 +18,69 @@ import (
 
 	log "github.com/sirupsen/logrus"
 )
+
+type recentKeyCache struct {
+	mu      sync.Mutex
+	ttl     time.Duration
+	entries map[string]time.Time
+}
+
+func newRecentKeyCache(ttl time.Duration) *recentKeyCache {
+	if ttl <= 0 {
+		ttl = 24 * time.Hour
+	}
+	return &recentKeyCache{
+		ttl:     ttl,
+		entries: make(map[string]time.Time),
+	}
+}
+
+func (c *recentKeyCache) SetTTL(ttl time.Duration) {
+	if ttl <= 0 {
+		return
+	}
+	c.mu.Lock()
+	c.ttl = ttl
+	c.mu.Unlock()
+}
+
+func (c *recentKeyCache) SeenRecently(key string, now time.Time) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.pruneLocked(now)
+	if ts, ok := c.entries[key]; ok && now.Sub(ts) <= c.ttl {
+		return true
+	}
+	return false
+}
+
+func (c *recentKeyCache) Mark(key string, now time.Time) {
+	c.mu.Lock()
+	c.entries[key] = now
+	c.pruneLocked(now)
+	c.mu.Unlock()
+}
+
+func (c *recentKeyCache) Size() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.pruneLocked(time.Now())
+	return len(c.entries)
+}
+
+func (c *recentKeyCache) pruneLocked(now time.Time) {
+	if c.ttl <= 0 {
+		return
+	}
+	cutoff := now.Add(-c.ttl)
+	for k, ts := range c.entries {
+		if ts.Before(cutoff) {
+			delete(c.entries, k)
+		}
+	}
+}
+
+var chrobRecentSentCache = newRecentKeyCache(24 * time.Hour)
 
 func chrobDedupKey(shipment chrobinson.ShipmentInfo, order loader.LoaderOrder) string {
 	// Prefer loadNumber when present.
@@ -74,6 +138,34 @@ func envTruthy(key string, def bool) bool {
 	}
 }
 
+func envInt(key string, def int) int {
+	v, ok := os.LookupEnv(key)
+	if !ok {
+		return def
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil {
+		return def
+	}
+	return n
+}
+
+func fallbackOrderNumberFromDedupKey(key string) string {
+	suffix := strings.TrimPrefix(key, "fallback:")
+	if suffix == "" {
+		suffix = "UNKNOWN"
+	}
+	if len(suffix) > 16 {
+		suffix = suffix[:16]
+	}
+	return "CHROB-FB-" + strings.ToUpper(suffix)
+}
+
+type chrobPageItem struct {
+	Key   string
+	Order loader.LoaderOrder
+}
+
 func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error {
 	locations, err := db.FetchLoaderLocations("TRUCKSTOP")
 	if err != nil {
@@ -84,21 +176,40 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 	log.Infof("Fetched %d locations from Loader API", len(locations))
 
 	var (
-		processedLocations int
-		skippedLocations   int
-		searchErrors       int
-		totalShipments     int
-		totalEnqueued      int
-		totalPosted        int
-		companyNameCounts  = map[string]int{}
-		originNameCounts   = map[string]int{}
-		destNameCounts     = map[string]int{}
+		processedLocations      int
+		skippedLocations        int
+		searchErrors            int
+		totalShipments          int
+		totalEnqueued           int
+		totalPosted             int
+		totalLocationDupSkipped int
+		totalCycleDupSkipped    int
+		totalRecentDupSkipped   int
+		totalSQLiteDupSkipped   int
+		companyNameCounts       = map[string]int{}
+		originNameCounts        = map[string]int{}
+		destNameCounts          = map[string]int{}
 	)
 
 	loaderClient := loader.NewAPIClientFromEnv(nil)
 	postPool := loader.PostPool{Client: loaderClient}
 	enableLoaderPost := envTruthy("ENABLE_LOADER_POST", true)
 	enableUIFeed := envTruthy("ENABLE_UI_FEED", true)
+	dedupeTTLMinutes := envInt("CHROB_SENT_DEDUP_TTL_MINUTES", 24*60)
+	if dedupeTTLMinutes < 1 {
+		dedupeTTLMinutes = 1
+	}
+	dedupeTTL := time.Duration(dedupeTTLMinutes) * time.Minute
+	chrobRecentSentCache.SetTTL(dedupeTTL)
+	log.WithFields(log.Fields{
+		"enable_loader_post":        enableLoaderPost,
+		"enable_ui_feed":            enableUIFeed,
+		"sent_dedupe_ttl_minutes":   dedupeTTLMinutes,
+		"recent_sent_cache_entries": chrobRecentSentCache.Size(),
+	}).Info("CHRob runner output/dedupe config")
+
+	// Dedup across *all* overlapping location searches within the current cycle.
+	cycleSeenKeys := make(map[string]struct{}, 8192)
 
 	for _, loc := range locations {
 		lat, err := parseFloatField(loc.Latitude)
@@ -146,7 +257,8 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 			},
 		}
 
-		seenKeys := make(map[string]struct{}, 512)
+		// Dedup within this location to stop when CHRob repeats the same page(s).
+		locationSeenKeys := make(map[string]struct{}, 512)
 		pageIndex := 0
 		const maxPagesPerLocation = 50
 		for {
@@ -201,9 +313,12 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 
 			totalShipments += len(searchResponse.Results)
 
-			var pageOrders []loader.LoaderOrder
-			var addedKeys int
+			var pageItems []chrobPageItem
+			var locationPageUnique int
 			var zeroLoadNumber int
+			var locationDupSkipped int
+			var cycleDupSkipped int
+			var recentDupSkipped int
 			if len(searchResponse.Results) > 0 {
 				s := searchResponse.Results[0]
 				log.WithFields(log.Fields{
@@ -216,18 +331,40 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 					"sample_equipment":  firstNonEmpty(s.SpecializedEquipment.Description, s.SpecializedEquipment.Code),
 				}).Debug("CHRob response sample (first result)")
 			}
+			pageNow := time.Now()
 			for _, shipment := range searchResponse.Results {
 				if shipment.LoadNumber == 0 {
 					zeroLoadNumber++
 				}
 				orderPayload := mapShipmentToLoaderOrder(shipment)
 				key := chrobDedupKey(shipment, orderPayload)
-				if _, exists := seenKeys[key]; exists {
+
+				if shipment.LoadNumber == 0 {
+					orderPayload.OrderNumber = fallbackOrderNumberFromDedupKey(key)
+				}
+
+				if _, exists := locationSeenKeys[key]; exists {
+					locationDupSkipped++
 					continue
 				}
-				seenKeys[key] = struct{}{}
-				addedKeys++
-				pageOrders = append(pageOrders, orderPayload)
+				locationSeenKeys[key] = struct{}{}
+				locationPageUnique++
+
+				if _, exists := cycleSeenKeys[key]; exists {
+					cycleDupSkipped++
+					continue
+				}
+				cycleSeenKeys[key] = struct{}{}
+
+				if (enableLoaderPost || enableUIFeed) && chrobRecentSentCache.SeenRecently(key, pageNow) {
+					recentDupSkipped++
+					continue
+				}
+
+				pageItems = append(pageItems, chrobPageItem{
+					Key:   key,
+					Order: orderPayload,
+				})
 
 				if name := strings.TrimSpace(shipment.Contact.CompanyName); name != "" {
 					companyNameCounts[name]++
@@ -240,69 +377,165 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 				}
 			}
 
+			totalLocationDupSkipped += locationDupSkipped
+			totalCycleDupSkipped += cycleDupSkipped
+			totalRecentDupSkipped += recentDupSkipped
+
 			log.WithFields(log.Fields{
-				"lat":              lat,
-				"lng":              lng,
-				"pageIndex":        pageIndex,
-				"results":          len(searchResponse.Results),
-				"enqueued_unique":  len(pageOrders),
-				"dedup_skipped":    len(searchResponse.Results) - len(pageOrders),
-				"loadNumber_zero":  zeroLoadNumber,
-				"loadNumber_non0":  len(searchResponse.Results) - zeroLoadNumber,
-				"totalCount_field": searchResponse.TotalCount,
+				"lat":                  lat,
+				"lng":                  lng,
+				"pageIndex":            pageIndex,
+				"results":              len(searchResponse.Results),
+				"location_page_unique": locationPageUnique,
+				"queued_for_output":    len(pageItems),
+				"location_dup_skipped": locationDupSkipped,
+				"cycle_dup_skipped":    cycleDupSkipped,
+				"recent_dup_skipped":   recentDupSkipped,
+				"loadNumber_zero":      zeroLoadNumber,
+				"loadNumber_non0":      len(searchResponse.Results) - zeroLoadNumber,
+				"totalCount_field":     searchResponse.TotalCount,
 			}).Info("CHRob page summary")
 
-			// If the API ignores pageIndex or returns a repeated page, we can end up in an infinite loop.
-			// Break when this page contains no new unique loads.
-			if pageIndex > 0 && len(pageOrders) == 0 {
+			sqliteDupSkipped := 0
+			if enableLoaderPost && len(pageItems) > 0 {
+				keys := make([]string, 0, len(pageItems))
+				for _, item := range pageItems {
+					keys = append(keys, item.Key)
+				}
+
+				sentSince, err := db.ChrobSentKeysSince(keys, pageNow.Add(-dedupeTTL))
+				if err != nil {
+					log.WithError(err).WithFields(log.Fields{
+						"pageIndex": pageIndex,
+						"lat":       lat,
+						"lng":       lng,
+						"keys":      len(keys),
+					}).Error("CHRob SQLite dedupe lookup failed; continuing without persistent filter")
+				} else if len(sentSince) > 0 {
+					filtered := make([]chrobPageItem, 0, len(pageItems))
+					for _, item := range pageItems {
+						if _, exists := sentSince[item.Key]; exists {
+							sqliteDupSkipped++
+							chrobRecentSentCache.Mark(item.Key, pageNow)
+							continue
+						}
+						filtered = append(filtered, item)
+					}
+					pageItems = filtered
+				}
+			}
+			if sqliteDupSkipped > 0 {
+				totalSQLiteDupSkipped += sqliteDupSkipped
 				log.WithFields(log.Fields{
-					"lat":        lat,
-					"lng":        lng,
-					"pageIndex":  pageIndex,
-					"pageSize":   searchRequest.PageSize,
-					"totalCount": searchResponse.TotalCount,
+					"lat":                lat,
+					"lng":                lng,
+					"pageIndex":          pageIndex,
+					"sqlite_dup_skipped": sqliteDupSkipped,
+					"queued_for_output":  len(pageItems),
+				}).Info("CHRob SQLite dedupe filtered page items")
+			}
+
+			// If the API ignores pageIndex or returns a repeated page, we can end up in an infinite loop.
+			// Break when this page contains no new *location-level* unique loads.
+			// (Using queued_for_output here would false-trigger on overlap/recent-cache duplicates.)
+			if pageIndex > 0 && locationPageUnique == 0 {
+				log.WithFields(log.Fields{
+					"lat":                  lat,
+					"lng":                  lng,
+					"pageIndex":            pageIndex,
+					"pageSize":             searchRequest.PageSize,
+					"totalCount":           searchResponse.TotalCount,
+					"location_page_unique": locationPageUnique,
 				}).Warn("CHRob paging yielded 0 new unique loads; stopping pagination for location")
 				break
 			}
 
-			if shipmentKeyWarning := addedKeys == 0 && len(searchResponse.Results) > 0; shipmentKeyWarning {
+			if shipmentKeyWarning := locationPageUnique == 0 && len(searchResponse.Results) > 0; shipmentKeyWarning {
 				log.WithFields(log.Fields{
-					"lat":       lat,
-					"lng":       lng,
-					"pageIndex": pageIndex,
-					"results":   len(searchResponse.Results),
+					"lat":                  lat,
+					"lng":                  lng,
+					"pageIndex":            pageIndex,
+					"results":              len(searchResponse.Results),
+					"location_page_unique": locationPageUnique,
 				}).Warn("CHRob page produced results but none were enqueued (all duplicates)")
 			}
 
-			if enableLoaderPost && len(pageOrders) > 0 {
+			if enableLoaderPost && len(pageItems) > 0 {
+				orders := make([]loader.LoaderOrder, 0, len(pageItems))
+				for _, item := range pageItems {
+					orders = append(orders, item.Order)
+				}
+
 				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-				ok, errs := postPool.PostAll(ctx, pageOrders)
+				results := postPool.PostAllDetailed(ctx, orders)
 				cancel()
-				totalPosted += ok
-				if len(errs) > 0 {
-					for _, postErr := range errs {
-						log.WithError(postErr).Error("Failed to post order to Loader API")
+
+				ok := 0
+				fail := 0
+				markedRecent := 0
+				var sentMarks []db.ChrobSentMark
+				for _, result := range results {
+					if result.Err != nil {
+						fail++
+						log.WithError(result.Err).WithFields(log.Fields{
+							"orderNumber": result.Order.OrderNumber,
+							"source":      result.Order.Source,
+							"pageIndex":   pageIndex,
+							"lat":         lat,
+							"lng":         lng,
+						}).Error("Failed to post CHRob order to Loader API")
+						continue
+					}
+					ok++
+					totalPosted++
+					if result.Index >= 0 && result.Index < len(pageItems) {
+						item := pageItems[result.Index]
+						chrobRecentSentCache.Mark(item.Key, pageNow)
+						markedRecent++
+						sentMarks = append(sentMarks, db.ChrobSentMark{
+							Key:         item.Key,
+							OrderNumber: item.Order.OrderNumber,
+							Source:      item.Order.Source,
+							LastSentAt:  pageNow,
+						})
 					}
 				}
+				if err := db.ChrobMarkSentBatch(sentMarks); err != nil {
+					log.WithError(err).WithFields(log.Fields{
+						"pageIndex": pageIndex,
+						"lat":       lat,
+						"lng":       lng,
+						"marks":     len(sentMarks),
+					}).Error("Failed to persist CHRob sent dedupe marks to SQLite")
+				}
+
 				log.WithFields(log.Fields{
-					"pageIndex":    pageIndex,
-					"pageOrders":   len(pageOrders),
-					"posted_ok":    ok,
-					"posted_fail":  len(errs),
-					"location_lat": lat,
-					"location_lng": lng,
+					"pageIndex":     pageIndex,
+					"pageOrders":    len(pageItems),
+					"posted_ok":     ok,
+					"posted_fail":   fail,
+					"recent_marked": markedRecent,
+					"sqlite_marked": len(sentMarks),
+					"location_lat":  lat,
+					"location_lng":  lng,
 				}).Info("CHRob Loader post summary")
+			} else if !enableLoaderPost && len(pageItems) > 0 && enableUIFeed {
+				// In UI-only mode, mark recently seen keys after enqueue below so we still suppress
+				// duplicates across runner cycles without requiring LoaderAPI posts.
 			}
 
 			// Also load the in-memory feed so the UI can page through results.
 			if enableUIFeed && feed != nil {
-				for _, o := range pageOrders {
-					feed.Add(o)
+				for _, item := range pageItems {
+					feed.Add(item.Order)
 					totalEnqueued++
+					if !enableLoaderPost {
+						chrobRecentSentCache.Mark(item.Key, pageNow)
+					}
 				}
 				log.WithFields(log.Fields{
 					"pageIndex":       pageIndex,
-					"enqueued":        len(pageOrders),
+					"enqueued":        len(pageItems),
 					"enqueued_total":  totalEnqueued,
 					"location_lat":    lat,
 					"location_lng":    lng,
@@ -335,6 +568,12 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 		"shipments_total":        totalShipments,
 		"enqueued_total":         totalEnqueued,
 		"posted_total":           totalPosted,
+		"location_dup_skipped":   totalLocationDupSkipped,
+		"cycle_dup_skipped":      totalCycleDupSkipped,
+		"recent_dup_skipped":     totalRecentDupSkipped,
+		"sqlite_dup_skipped":     totalSQLiteDupSkipped,
+		"cycle_unique_seen":      len(cycleSeenKeys),
+		"recent_sent_cache_size": chrobRecentSentCache.Size(),
 		"contact_company_unique": len(companyNameCounts),
 		"origin_name_unique":     len(originNameCounts),
 		"dest_name_unique":       len(destNameCounts),
