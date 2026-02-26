@@ -57,12 +57,22 @@ type LoaderOrder struct {
 }
 
 type LoadCostMeta struct {
+	LoadNumber        int     `json:"loadNumber,omitempty"`
+	CarrierCode       string  `json:"carrierCode,omitempty"`
+	ExpirationDate    string  `json:"expirationDate,omitempty"`
 	Type              string  `json:"type,omitempty"`
 	Code              string  `json:"code,omitempty"`
 	Description       string  `json:"description,omitempty"`
 	SourceCostPerUnit float64 `json:"sourceCostPerUnit,omitempty"`
 	Units             int     `json:"units,omitempty"`
 	CurrencyCode      string  `json:"currencyCode,omitempty"`
+	EmployeeCode      string  `json:"employeeCode,omitempty"`
+	EmployeeBranch    string  `json:"employeeBranch,omitempty"`
+	Score             int     `json:"score,omitempty"`
+	CreatedDateTime   string  `json:"createdDateTime,omitempty"`
+	UpdatedDateTime   string  `json:"updatedDateTime,omitempty"`
+	BinCostKey        string  `json:"binCostKey,omitempty"`
+	BinOfferable      bool    `json:"binOfferable,omitempty"`
 }
 
 type EmptyLocation struct {

@@ -311,25 +311,25 @@ func (client *APIClient) BookLoad(bookingRequest LoadBookingRequest) error {
 	return nil
 }
 
-func (client *APIClient) SubmitLoadOffer(loadNumber string, offerRequest LoadOfferRequest) error {
+func (client *APIClient) SubmitLoadOffer(loadNumber string, offerRequest LoadOfferRequest) (*LoadOfferSubmitResponse, error) {
 	url := fmt.Sprintf("%s/v1/shipments/%s/offers", client.BaseURL, loadNumber)
 
 	requestBody, err := json.Marshal(offerRequest)
 	if err != nil {
 		log.WithError(err).Error("Failed to marshal offer request body")
-		return err
+		return nil, err
 	}
 
 	httpRequest, err := http.NewRequest("POST", url, bytes.NewBuffer(requestBody))
 	if err != nil {
 		log.WithError(err).Error("Failed to create HTTP request for submitting load offer")
-		return err
+		return nil, err
 	}
 
 	token, err := client.TokenStore.GetValidToken()
 	if err != nil {
 		log.WithError(err).Error("Failed to get valid token")
-		return err
+		return nil, err
 	}
 
 	httpRequest.Header.Set("Authorization", "Bearer "+token)
@@ -338,21 +338,35 @@ func (client *APIClient) SubmitLoadOffer(loadNumber string, offerRequest LoadOff
 	response, err := client.HTTPClient.Do(httpRequest)
 	if err != nil {
 		log.WithError(err).Error("Failed to make HTTP request for submitting load offer")
-		return err
+		return nil, err
 	}
 	defer response.Body.Close()
 
-	if response.StatusCode != http.StatusAccepted {
-		responseBody, errRead := ioutil.ReadAll(response.Body)
-		if errRead != nil {
-			log.WithError(errRead).Error("Failed to read response body")
-		}
-		log.Errorf("Failed to submit load offer, status code: %d, response: %s", response.StatusCode, string(responseBody))
-		return fmt.Errorf("API request failed with status code %d: %s", response.StatusCode, string(responseBody))
+	responseBody, errRead := ioutil.ReadAll(response.Body)
+	if errRead != nil {
+		log.WithError(errRead).Error("Failed to read offer response body")
+		return nil, errRead
 	}
 
-	log.Info("Load offer submitted successfully")
-	return nil
+	if response.StatusCode != http.StatusAccepted {
+		log.Errorf("Failed to submit load offer, status code: %d, response: %s", response.StatusCode, string(responseBody))
+		return nil, fmt.Errorf("API request failed with status code %d: %s", response.StatusCode, string(responseBody))
+	}
+
+	submitResponse := &LoadOfferSubmitResponse{}
+	if len(bytes.TrimSpace(responseBody)) > 0 {
+		if err := json.Unmarshal(responseBody, submitResponse); err != nil {
+			log.WithError(err).WithField("response_body", string(responseBody)).Error("Failed to parse load offer response")
+			return nil, err
+		}
+	}
+
+	log.WithFields(log.Fields{
+		"loadNumber":      loadNumber,
+		"offerRequestId":  submitResponse.OfferRequestId,
+		"response_status": response.StatusCode,
+	}).Info("Load offer submitted successfully")
+	return submitResponse, nil
 }
 
 func (client *APIClient) UploadDocument(loadNumber string, fileHeader *multipart.FileHeader, docType string) error {

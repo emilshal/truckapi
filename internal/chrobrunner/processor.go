@@ -195,10 +195,10 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 	postPool := loader.PostPool{Client: loaderClient}
 	enableLoaderPost := envTruthy("ENABLE_LOADER_POST", true)
 	enableUIFeed := envTruthy("ENABLE_UI_FEED", true)
-	dedupeTTLMinutes := envInt("CHROB_SENT_DEDUP_TTL_MINUTES", 24*60)
-	if dedupeTTLMinutes < 1 {
-		dedupeTTLMinutes = 1
-	}
+	// Always enforce a 24-hour send dedupe window for CHRob posts.
+	// We intentionally do not read this from env to prevent accidental overrides
+	// (e.g. short test TTLs) from causing duplicates in production-like runs.
+	dedupeTTLMinutes := 24 * 60
 	dedupeTTL := time.Duration(dedupeTTLMinutes) * time.Minute
 	chrobRecentSentCache.SetTTL(dedupeTTL)
 	log.WithFields(log.Fields{
@@ -719,13 +719,6 @@ func mapShipmentToLoaderOrder(shipment chrobinson.ShipmentInfo) loader.LoaderOrd
 		Quantity:            0,
 		Stops:               stops,
 		TruckCompanyName:    companyName,
-		EmptyDateTime:       deliveryDate,
-		EmptyLocation: loader.EmptyLocation{
-			City:    shipment.Destination.City,
-			State:   deliveryState,
-			Country: deliveryCountry,
-			Zip:     deliveryZip,
-		},
 	}
 }
 

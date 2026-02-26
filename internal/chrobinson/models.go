@@ -799,6 +799,10 @@ type LoadOfferRequest struct {
 	AvailableLoadCost int    `json:"availableLoadCost,omitempty"`
 }
 
+type LoadOfferSubmitResponse struct {
+	OfferRequestId string `json:"offerRequestId"`
+}
+
 // OfferResponse represents the structure for an offer response callback.
 type OfferResponse struct {
 	ID               uint     `gorm:"primaryKey" json:"id"`
