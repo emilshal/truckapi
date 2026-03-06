@@ -15,6 +15,7 @@ import (
 	"truckapi/internal/chrobinson"
 	"truckapi/internal/loader"
 	"truckapi/internal/uifeed"
+	"truckapi/pkg/config"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -236,10 +237,11 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 		toDate := time.Now().AddDate(0, 0, 10).Format("2006-01-02")
 
 		baseRequest := chrobinson.AvailableShipmentSearchRequest{
-			PageIndex:  0,
-			PageSize:   100,
-			RegionCode: "NA",
-			Modes:      []string{"F", "L", "R", "V", "H"},
+			PageIndex:   0,
+			PageSize:    100,
+			RegionCode:  "NA",
+			CarrierCode: config.GetEnv(config.CHRobCarrierCode, ""),
+			Modes:       []string{"F", "L", "R", "V", "H"},
 			OriginRadiusSearch: &chrobinson.RadiusSearch{
 				Coordinate: chrobinson.Coordinate{Lat: lat, Lon: lng},
 				Radius: chrobinson.Radius{
@@ -769,24 +771,29 @@ func sumLoadCosts(costs []chrobinson.AvailableLoadCost) float64 {
 }
 
 func mapTruckType(shipment chrobinson.ShipmentInfo, length float64) (string, int, string) {
-	original := firstNonEmpty(shipment.SpecializedEquipment.Description, shipment.SpecializedEquipment.Code)
+	original := firstNonEmpty(
+		shipment.SpecializedEquipment.Description,
+		shipment.SpecializedEquipment.Code,
+		strings.Join(shipment.Modes, ","),
+	)
 	if original == "" {
 		original = "UNKNOWN"
 	}
 
+	// Preserve CHRob's truck/equipment type string as-is for Loader visibility,
+	// but keep a best-effort TruckTypeId mapping for Loader compatibility.
+	truckTypeID := 0
 	lower := strings.ToLower(original)
-	if strings.Contains(lower, "sprinter") {
-		return "SPRINTER", 3, original
+	switch {
+	case strings.Contains(lower, "sprinter"):
+		truckTypeID = 3
+	case length > 26:
+		truckTypeID = 2
+	case length > 0:
+		truckTypeID = 1
 	}
 
-	if length > 26 {
-		return "LARGE STRAIGHT", 2, original
-	}
-	if length > 0 {
-		return "SMALL STRAIGHT", 1, original
-	}
-
-	return "", 0, original
+	return original, truckTypeID, original
 }
 
 func contactMethodValue(contact chrobinson.Contact, method string) string {

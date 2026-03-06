@@ -32,6 +32,38 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("loader api returned %d: %s", e.StatusCode, e.Body)
 }
 
+func loaderSuccessBodyLoggingEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(config.GetEnv("LOADER_LOG_SUCCESS_BODY", ""))) {
+	case "1", "true", "yes", "y", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func loader2xxBodyExplicitFailure(body []byte) bool {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 {
+		return false
+	}
+
+	var obj map[string]any
+	if err := json.Unmarshal(trimmed, &obj); err != nil {
+		return false
+	}
+
+	if v, ok := obj["success"].(bool); ok && !v {
+		return true
+	}
+	if v, ok := obj["ok"].(bool); ok && !v {
+		return true
+	}
+	if v, ok := obj["status"].(string); ok && strings.EqualFold(strings.TrimSpace(v), "error") {
+		return true
+	}
+	return false
+}
+
 func NewAPIClient(baseURL, apiKey string, httpClient *http.Client) *APIClient {
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	if httpClient == nil {
@@ -90,10 +122,26 @@ func (client *APIClient) CreateOrder(order LoaderOrder) error {
 		return fmt.Errorf("loader create order request failed: %w", err)
 	}
 	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusAccepted {
-		body, _ := io.ReadAll(resp.Body)
 		return &APIError{StatusCode: resp.StatusCode, Body: string(body)}
+	}
+
+	if loader2xxBodyExplicitFailure(body) {
+		return &APIError{StatusCode: resp.StatusCode, Body: string(body)}
+	}
+
+	if loaderSuccessBodyLoggingEnabled() {
+		if trimmed := strings.TrimSpace(string(body)); trimmed != "" {
+			log.WithFields(log.Fields{
+				"source":       order.Source,
+				"orderNumber":  order.OrderNumber,
+				"status_code":  resp.StatusCode,
+				"loaderApiUrl": url,
+				"resp_body":    trimmed,
+			}).Info("Loader API success response body")
+		}
 	}
 
 	// Per-order success logs can be extremely noisy at scale; keep them at debug.

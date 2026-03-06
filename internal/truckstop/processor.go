@@ -11,11 +11,21 @@ import (
 	"truckapi/db"
 	"truckapi/internal/loader"
 	"truckapi/internal/uifeed"
+	"truckapi/pkg/config"
 
 	log "github.com/sirupsen/logrus"
 )
 
 func TruckstopSearchProcess(client *LoadSearchClient, feed *uifeed.Store) error {
+	// Truckstop should continue posting to the normal Loader API endpoint.
+	// We intentionally bypass LOADER_ORDERS_BASE_URL here because that override is
+	// used in local testing to send CHRob orders to the in-process mock receiver.
+	loaderClient := loader.NewAPIClient(
+		config.GetEnv(config.LoaderAPIBaseURL, "https://core.hfield.net"),
+		config.GetEnv(config.LoaderAPIKey, ""),
+		nil,
+	)
+
 	locations, err := db.FetchLoaderLocations("TRUCKSTOP")
 	if err != nil {
 		log.WithError(err).Error("Failed to fetch locations from Loader API")
@@ -274,8 +284,15 @@ func TruckstopSearchProcess(client *LoadSearchClient, feed *uifeed.Store) error 
 					fmt.Printf("\n=== RAW XML FOR LOAD ID %s ===\n%s\n\n", load.ID, orderPayload.LoadTruckstopXML)
 					// fmt.Printf("\n=== RAW SOAP FRAGMENT FOR LOAD ID %s ===\n%s\n\n", load.ID, orderPayload.RawTruckstopFragmentXML)
 
-					// Prototype: do not POST to Loader API. Send to in-memory UI feed instead.
-					// Old Loader API POST is intentionally removed/commented for prototype verification.
+					if err := loaderClient.CreateOrder(orderPayload); err != nil {
+						log.WithError(err).WithFields(log.Fields{
+							"source":      orderPayload.Source,
+							"orderNumber": orderPayload.OrderNumber,
+							"loadID":      load.ID,
+						}).Error("Failed to post Truckstop order to Loader API")
+						continue
+					}
+
 					if feed != nil {
 						feed.Add(orderPayload)
 					}

@@ -38,12 +38,13 @@ func getChrobDedupeDB() (*gorm.DB, error) {
 		if DB != nil {
 			chrobDedupeDB = DB
 		} else {
-			chrobDedupeDB, chrobDedupeInitErr = gorm.Open(sqlite.Open("truckapi.db"), &gorm.Config{})
+			dbPath := sqliteDBPath()
+			chrobDedupeDB, chrobDedupeInitErr = gorm.Open(sqlite.Open(dbPath), &gorm.Config{})
 			if chrobDedupeInitErr != nil {
 				chrobDedupeInitErr = fmt.Errorf("open sqlite for chrob dedupe: %w", chrobDedupeInitErr)
 				return
 			}
-			log.Info("SQLite connection established for CHRob dedupe store")
+			log.WithField("path", dbPath).Info("SQLite connection established for CHRob dedupe store")
 		}
 
 		if err := chrobDedupeDB.AutoMigrate(&ChrobSentDedupe{}); err != nil {

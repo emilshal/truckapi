@@ -104,7 +104,7 @@ func TruckstopSearchHandler(client *LoadSearchClient, feed *uifeed.Store) fiber.
 		}
 
 		return c.JSON(fiber.Map{
-			"message": "Truckstop loads processed and sent to UI feed",
+			"message": "Truckstop loads processed and posted to Loader API",
 		})
 	}
 }

@@ -55,10 +55,11 @@ func InitializeRoutes(apiClient *chrobinson.APIClient, feed *uifeed.Store) *fibe
 	fiberApp.Post("/v1/shipments/mark-booked", handlers.MarkBookedHandler(apiClient))
 
 	//Post endpoint to submit an offer
+	// NOTE: auth temporarily disabled per deployment request.
 	fiberApp.Post("/v1/shipments/:loadNumber/offers", handlers.SubmitLoadOfferHandler(apiClient))
 
-	// Apply API key middleware to the specific route
-	fiberApp.Post("/offerResponse/callback/here", middlewares.APIKeyMiddleware(), handlers.OfferResponseHandler)
+	// CHRob offer response callback prefers bearer auth, with optional API-key fallback.
+	fiberApp.Post("/offerResponse/callback/here", middlewares.OfferCallbackAuthMiddleware(), handlers.OfferResponseHandler)
 
 	//Post endpoint for receiving all of our booked shipment details
 	fiberApp.Post("/shipmentDetails/callback/here", handlers.ShipmentDetailsHandler)

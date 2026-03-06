@@ -1,7 +1,12 @@
 package auth
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -11,8 +16,6 @@ import (
 	"truckapi/pkg/config"
 
 	log "github.com/sirupsen/logrus"
-	"golang.org/x/oauth2"
-	"golang.org/x/oauth2/clientcredentials"
 )
 
 // Stores the OAuth token and its expiration time (which we track)
@@ -22,18 +25,30 @@ type TokenStore struct {
 	expiresAt time.Time
 }
 
+const fallbackTokenTTL = 24 * time.Hour
+
 // Function used to create a new instance of the TokenStore
 func NewTokenStore() *TokenStore {
 	// Retrieve the existing token from the environment variable
-	token := config.GetEnv(config.CHRobAccessToken, "")
+	token := strings.TrimSpace(config.GetEnv(config.CHRobAccessToken, ""))
 	// Declare a variable to hold the expiration time of the token
 	var expiresAt time.Time
 	// Check if the token was retrieved from the environment variable
 	if token != "" {
-		// Set expiresAt to a future time, e.g., 24 hours from now
-		// This is just an example; adjust the duration based on your token's actual expiration
-		// Using UTC because our timezone is different from CHRobinson
-		expiresAt = time.Now().UTC().Add(24 * time.Hour)
+		if parsedExp, err := tokenExpiryFromJWT(token); err == nil {
+			if time.Now().UTC().Before(parsedExp.UTC()) {
+				expiresAt = parsedExp.UTC()
+				log.WithField("token_expiry", expiresAt.Format(time.RFC3339)).Info("Loaded CHRob access token from environment")
+			} else {
+				// Expired token should not be treated as usable; force refresh on first API call.
+				token = ""
+				log.WithField("token_expiry", parsedExp.Format(time.RFC3339)).Warn("CHRob access token in environment is expired; will refresh")
+			}
+		} else {
+			// Non-JWT or malformed token should be refreshed immediately.
+			token = ""
+			log.WithError(err).Warn("CHRob access token in environment is invalid; will refresh")
+		}
 	}
 	// Returns a new instance of TokenStore with the token and expiration time
 	return &TokenStore{
@@ -51,12 +66,8 @@ func GenerateToken() (*types.TokenResponse, error) {
 		GrantType:    config.GetEnv(config.CHRobGrantType, ""),
 	}
 	tokenURL := config.GetEnv(config.CHRobTokenUrl, "")
-
-	// Configure the OAuth 2.0 client
-	clientConfig := clientcredentials.Config{
-		ClientID:     auth.ClientID,
-		ClientSecret: auth.ClientSecret,
-		TokenURL:     tokenURL,
+	if strings.TrimSpace(auth.GrantType) == "" {
+		auth.GrantType = "client_credentials"
 	}
 
 	log.WithFields(log.Fields{
@@ -75,28 +86,59 @@ func GenerateToken() (*types.TokenResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	// Ensure token requests cannot hang forever by providing an HTTP client with timeouts.
-	ctx = context.WithValue(ctx, oauth2.HTTPClient, &http.Client{
-		Timeout: timeout,
-	})
-
-	// Obtain a token source (refreshes token when expired)
-	tokenSource := clientConfig.TokenSource(ctx)
-
-	// Get an access token from the Token Source
-	token, err := tokenSource.Token()
+	requestBody, err := json.Marshal(auth)
 	if err != nil {
-		log.WithError(err).Error("Failed to obtain token from token source")
+		log.WithError(err).Error("Failed to marshal CHRob token request body")
 		return nil, err
 	}
 
-	// Convert the *oauth2.Token to a *types.TokenResponse.
-	// tokenResponse is based on the status 200 response from the CHRobinson authentication endpoint.
-	tokenResponse := &types.TokenResponse{
-		AccessToken: token.AccessToken,
-		ExpiresIn:   int(token.Expiry.Sub(time.Now()).Seconds()),
-		TokenType:   token.TokenType,
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, bytes.NewBuffer(requestBody))
+	if err != nil {
+		log.WithError(err).Error("Failed to create CHRob token request")
+		return nil, err
 	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: timeout}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.WithError(err).Error("Failed to request CHRob token")
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	rawBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.WithError(err).Error("Failed to read CHRob token response body")
+		return nil, err
+	}
+
+	tokenResponse := &types.TokenResponse{}
+	if err := json.Unmarshal(rawBody, tokenResponse); err != nil {
+		log.WithError(err).WithField("response_body", string(rawBody)).Error("Failed to parse CHRob token response")
+		return nil, err
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		log.WithFields(log.Fields{
+			"status_code":        resp.StatusCode,
+			"error":              tokenResponse.Error,
+			"error_description":  tokenResponse.ErrorDescription,
+			"response_body":      string(rawBody),
+			"response_body_size": len(rawBody),
+		}).Error("CHRob token request returned non-200 status")
+		return nil, fmt.Errorf("token request failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(rawBody)))
+	}
+
+	if strings.TrimSpace(tokenResponse.AccessToken) == "" {
+		return nil, fmt.Errorf("token request succeeded but access_token is empty")
+	}
+
+	log.WithFields(log.Fields{
+		"token_type": tokenResponse.TokenType,
+		"expires_in": tokenResponse.ExpiresIn,
+		"scope":      tokenResponse.Scope,
+	}).Info("CHRob token retrieved")
 
 	return tokenResponse, nil
 }
@@ -109,7 +151,11 @@ func (store *TokenStore) SetToken(token string, expiresIn time.Duration) {
 	defer store.Unlock()
 	// Update the token field to the new token
 	store.token = token
-	// Set the expiration time to the one that was created in GenerateToken
+	if expiresIn <= 0 {
+		expiresIn = fallbackTokenTTL
+		log.WithField("expires_in_seconds", int(expiresIn.Seconds())).Warn("Token expiry not provided by CHRob token endpoint; using 24h fallback")
+	}
+	// Set the expiration time based on token response TTL
 	store.expiresAt = time.Now().UTC().Add(expiresIn)
 
 	// Save the token to the environment variable
@@ -122,6 +168,31 @@ func (store *TokenStore) SetToken(token string, expiresIn time.Duration) {
 		"expires_in_seconds": int(expiresIn.Seconds()),
 		"token_length":       len(token),
 	}).Info("Token set and saved")
+}
+
+func tokenExpiryFromJWT(token string) (time.Time, error) {
+	parts := strings.Split(token, ".")
+	if len(parts) < 2 {
+		return time.Time{}, fmt.Errorf("token is not a JWT")
+	}
+	claimsPart := strings.TrimSpace(parts[1])
+	if claimsPart == "" {
+		return time.Time{}, fmt.Errorf("token payload is empty")
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(claimsPart)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("failed to decode JWT payload: %w", err)
+	}
+	var claims struct {
+		Exp int64 `json:"exp"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return time.Time{}, fmt.Errorf("failed to parse JWT payload: %w", err)
+	}
+	if claims.Exp <= 0 {
+		return time.Time{}, fmt.Errorf("token payload missing exp")
+	}
+	return time.Unix(claims.Exp, 0).UTC(), nil
 }
 
 // GetToken returns the current token if it's not expired.

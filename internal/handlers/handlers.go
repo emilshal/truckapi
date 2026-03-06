@@ -3,6 +3,7 @@ package handlers
 import (
 	"strconv"
 	"strings"
+	"time"
 	"truckapi/db"
 	"truckapi/internal/chrobinson"
 	"truckapi/pkg/config"
@@ -63,6 +64,9 @@ func SearchAvailableShipmentsHandler(apiClient *chrobinson.APIClient) fiber.Hand
 
 		// After parsing the request body
 		log.Infof("Parsed search request: %+v", searchRequest)
+		if strings.TrimSpace(searchRequest.CarrierCode) == "" {
+			searchRequest.CarrierCode = config.GetEnv(config.CHRobCarrierCode, "")
+		}
 
 		// Define a variable to hold the search response.
 		var searchResponse *chrobinson.AvailableShipmentSearchResponse
@@ -330,9 +334,8 @@ func OfferResponseHandler(c *fiber.Ctx) error {
 		})
 	}
 
-	return c.Status(fiber.StatusOK).JSON(fiber.Map{
-		"message": "Offer response received and status updated successfully",
-	})
+	c.Set(fiber.HeaderContentType, "text/plain; charset=utf-8")
+	return c.Status(fiber.StatusOK).SendString("ok")
 }
 
 // ShipmentDetailsHandler handles the callback for shipment details.
@@ -366,19 +369,17 @@ func SubmitLoadOfferHandler(apiClient *chrobinson.APIClient) fiber.Handler {
 				"error": "loadNumber must be an integer",
 			})
 		}
-		var offerRequest chrobinson.LoadOfferRequest
-		if err := c.BodyParser(&offerRequest); err != nil {
+		offerRequest, err := validateAndBuildOfferRequest(c.Body())
+		if err != nil {
 			log.WithError(err).Error("Failed to parse offer request body")
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-				"error": "Invalid request data",
-			})
+			if fe, ok := err.(*fiber.Error); ok {
+				return c.Status(fe.Code).JSON(fiber.Map{"error": fe.Message})
+			}
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid request data"})
 		}
 
 		if offerRequest.CarrierCode == "" {
 			offerRequest.CarrierCode = config.GetEnv(config.CHRobCarrierCode, "")
-		}
-		if offerRequest.CurrencyCode == "" {
-			offerRequest.CurrencyCode = "USD"
 		}
 		if loadNumber == "" || offerRequest.CarrierCode == "" || offerRequest.OfferPrice <= 0 {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
@@ -386,23 +387,47 @@ func SubmitLoadOfferHandler(apiClient *chrobinson.APIClient) fiber.Handler {
 			})
 		}
 
+		idempotencyKey, err := idempotencyKeyFromRequest(c)
+		if err != nil {
+			if fe, ok := err.(*fiber.Error); ok {
+				return c.Status(fe.Code).JSON(fiber.Map{"error": fe.Message})
+			}
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid Idempotency-Key"})
+		}
+		fingerprint := offerSubmitFingerprint(loadNumber, offerRequest)
+		if idempotencyKey != "" {
+			if cached, hit, conflict := offerSubmitIdempotency.Get(idempotencyKey, fingerprint, time.Now()); conflict {
+				return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+					"error": "Idempotency-Key was already used with a different request payload",
+				})
+			} else if hit {
+				c.Set("X-Idempotent-Replay", "true")
+				return c.Status(fiber.StatusAccepted).JSON(cached)
+			}
+		}
+
 		var submitResponse *chrobinson.LoadOfferSubmitResponse
-		err := chrobinson.HandleAPICall(apiClient, func() error {
+		err = chrobinson.HandleAPICall(apiClient, func() error {
 			var err error
 			submitResponse, err = apiClient.SubmitLoadOffer(loadNumber, offerRequest)
 			return err
 		})
 
 		if err != nil {
-			log.WithError(err).Error("Failed to submit load offer")
-			if strings.Contains(err.Error(), "status code 400") {
-				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-					"error": "Bad request to API",
-				})
+			fields := log.Fields{
+				"loadNumber":  loadNumber,
+				"carrierCode": offerRequest.CarrierCode,
+				"offerPrice":  offerRequest.OfferPrice,
+				"chrobStatus": chrobinson.ErrorStatusCode(err),
 			}
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-				"error": "Failed to process offer",
-			})
+			if parsed, ok := chrobinson.ParseAPIErrorSchemaFromError(err); ok {
+				fields["chrobStatusCode"] = parsed.StatusCode
+				fields["chrobError"] = parsed.Error
+				fields["chrobMessage"] = parsed.Message
+			}
+			log.WithError(err).WithFields(fields).Error("Failed to submit load offer")
+			status, body := chrobOfferSubmitErrorResponse(err)
+			return c.Status(status).JSON(body)
 		}
 
 		if submitResponse == nil {
@@ -451,14 +476,19 @@ func SubmitLoadOfferHandler(apiClient *chrobinson.APIClient) fiber.Handler {
 			"persisted":      persisted,
 		}).Info("Load offer submission completed")
 
-		return c.Status(fiber.StatusAccepted).JSON(fiber.Map{
-			"message":        "Load offer submitted successfully",
-			"loadNumber":     loadNumber,
-			"offerRequestId": submitResponse.OfferRequestId,
-			"status":         "pending",
-			"persisted":      persisted,
-			"warning":        persistWarning,
-		})
+		response := offerSubmitResponse{
+			Message:        "Load offer submitted successfully",
+			LoadNumber:     loadNumber,
+			OfferRequestID: submitResponse.OfferRequestId,
+			Status:         "pending",
+			Persisted:      persisted,
+			Warning:        persistWarning,
+		}
+		if idempotencyKey != "" {
+			offerSubmitIdempotency.Put(idempotencyKey, fingerprint, response, time.Now())
+		}
+
+		return c.Status(fiber.StatusAccepted).JSON(response)
 	}
 }
 

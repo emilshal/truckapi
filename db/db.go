@@ -40,11 +40,12 @@ func formatToDateOnly(dateTimeStr string) (string, error) {
 // InitializeDatabase initializes the SQLite database connection and performs auto migration for the tables.
 func InitializeDatabase() {
 	var err error
-	DB, err = gorm.Open(sqlite.Open("truckapi.db"), &gorm.Config{})
+	dbPath := sqliteDBPath()
+	DB, err = gorm.Open(sqlite.Open(dbPath), &gorm.Config{})
 	if err != nil {
 		log.Fatalf("Error opening SQLite database: %v", err)
 	}
-	log.Info("SQLite database connection established.")
+	log.WithField("path", dbPath).Info("SQLite database connection established.")
 
 	err = DB.AutoMigrate(&chrobinson.ShipmentInfo{}, &chrobinson.OfferResponse{})
 	if err != nil {

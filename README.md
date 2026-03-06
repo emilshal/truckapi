@@ -44,3 +44,26 @@ CHRobAccessToken - The token url stored in the environment variable
 go build -o truckapi cmd/truckapi/main.go
 ./truckapi
 ```
+
+## CHRob LoaderAPI Dedupe Deployment Notes
+
+To prevent duplicate CHRob orders being re-posted to LoaderAPI, deploy with these rules:
+
+- Run only one `truckapi` instance/container at a time (no duplicate processes).
+- Persist `truckapi.db` on a Docker volume so SQLite dedupe state survives restarts.
+- Do not override CHRob send dedupe TTL; it is hardcoded in code to 24h (`1440` minutes).
+
+Why this matters:
+
+- CHRob resend suppression is stored in SQLite (`truckapi.db`) for a 24-hour window.
+- If the DB is ephemeral inside the container, a restart wipes dedupe history and old loads can be sent again.
+
+Practical Docker/Compose guidance:
+
+- Mount a persistent volume to the configured SQLite path and reuse the same container path on every deploy.
+- The provided `compose.yml` uses `TRUCKAPI_SQLITE_PATH=/var/lib/truckapi/truckapi.db` and mounts `truckapi_data` to `/var/lib/truckapi`.
+- Keep the service at a single replica/container only.
+
+Bonus (recommended):
+
+- Have LoaderAPI dedupe incoming CHRob posts by `source + orderNumber` as defense in depth.

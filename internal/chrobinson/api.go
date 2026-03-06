@@ -11,6 +11,7 @@ import (
 	"time"
 	"truckapi/internal/auth"
 	"truckapi/internal/httpdebug"
+	"truckapi/pkg/config"
 
 	"github.com/gofiber/fiber/v2"
 
@@ -41,8 +42,8 @@ func NewAPIClient(baseURL string, tokenStore *auth.TokenStore, httpClient *http.
 func HandleAPICall(client *APIClient, apiCall func() error) error {
 	err := apiCall()
 	if err != nil {
-		// Check if the error is a fiber.Error and has a StatusUnauthorized code
-		if fiberErr, ok := err.(*fiber.Error); ok && fiberErr.Code == fiber.StatusUnauthorized {
+		// Retry once after refreshing the token when the upstream indicates auth failure.
+		if ErrorStatusCode(err) == fiber.StatusUnauthorized {
 			// Token might be expired, try refreshing it
 			if refreshErr := client.TokenStore.RefreshToken(); refreshErr != nil {
 				log.WithError(refreshErr).Error("Failed to refresh token")
@@ -349,8 +350,23 @@ func (client *APIClient) SubmitLoadOffer(loadNumber string, offerRequest LoadOff
 	}
 
 	if response.StatusCode != http.StatusAccepted {
-		log.Errorf("Failed to submit load offer, status code: %d, response: %s", response.StatusCode, string(responseBody))
-		return nil, fmt.Errorf("API request failed with status code %d: %s", response.StatusCode, string(responseBody))
+		fields := log.Fields{
+			"loadNumber":   loadNumber,
+			"carrierCode":  offerRequest.CarrierCode,
+			"statusCode":   response.StatusCode,
+			"responseBody": string(responseBody),
+		}
+		if parsed, ok := ParseAPIErrorSchema(string(responseBody)); ok {
+			fields["chrobStatusCode"] = parsed.StatusCode
+			fields["chrobError"] = parsed.Error
+			fields["chrobMessage"] = parsed.Message
+		}
+		log.WithFields(fields).Error("Failed to submit load offer")
+		return nil, &HTTPStatusError{
+			StatusCode: response.StatusCode,
+			Operation:  "submit load offer",
+			Body:       string(responseBody),
+		}
 	}
 
 	submitResponse := &LoadOfferSubmitResponse{}
@@ -450,10 +466,11 @@ func CreateSearchRequestsForTrucks(apiClient *APIClient, trucks []Truck, locatio
 		}
 
 		searchRequest := AvailableShipmentSearchRequest{
-			PageIndex:  0,
-			PageSize:   100,
-			RegionCode: "NA",
-			Modes:      []string{"F", "L", "R", "V", "H"},
+			PageIndex:   0,
+			PageSize:    100,
+			RegionCode:  "NA",
+			CarrierCode: config.GetEnv(config.CHRobCarrierCode, ""),
+			Modes:       []string{"F", "L", "R", "V", "H"},
 			OriginRadiusSearch: &RadiusSearch{
 				Coordinate: Coordinate{
 					Lat: location.Lat,

@@ -2,9 +2,12 @@ package types
 
 // TokenResponse represents the JSON response from the authentication endpoint.
 type TokenResponse struct {
-	AccessToken string `json:"access_token"`
-	ExpiresIn   int    `json:"expires_in"`
-	TokenType   string `json:"token_type"`
+	AccessToken      string `json:"access_token"`
+	ExpiresIn        int    `json:"expires_in"`
+	TokenType        string `json:"token_type"`
+	Scope            string `json:"scope,omitempty"`
+	Error            string `json:"error,omitempty"`
+	ErrorDescription string `json:"error_description,omitempty"`
 }
 
 type Auth struct {

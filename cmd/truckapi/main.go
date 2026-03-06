@@ -33,6 +33,18 @@ func envTruthy(key string, def bool) bool {
 	}
 }
 
+func inferCHRobEnv(baseURL string) string {
+	u := strings.ToLower(strings.TrimSpace(baseURL))
+	switch {
+	case strings.Contains(u, "sandbox"):
+		return "sandbox"
+	case strings.Contains(u, "api.navisphere.com"):
+		return "production"
+	default:
+		return "custom"
+	}
+}
+
 func main() {
 	// Initialize TokenStore, HTTP Client, and APIClient
 	tokenStore := auth.NewTokenStore()
@@ -40,7 +52,20 @@ func main() {
 		Timeout:   30 * time.Second,
 		Transport: httpdebug.NewTransport(http.DefaultTransport),
 	}
-	apiClient := chrobinson.NewAPIClient(config.GetEnv(config.CHRobBaseURL, "https://api.navisphere.com"), tokenStore, httpClient)
+	chrobBaseURL := config.GetEnv(config.CHRobBaseURL, "https://api.navisphere.com")
+	apiClient := chrobinson.NewAPIClient(chrobBaseURL, tokenStore, httpClient)
+
+	chrobEnv := strings.TrimSpace(config.GetEnv(config.CHRobEnv, ""))
+	if chrobEnv == "" {
+		chrobEnv = inferCHRobEnv(chrobBaseURL)
+	}
+	log.WithFields(log.Fields{
+		"chrob_base_url": chrobBaseURL,
+		"chrob_env":      chrobEnv,
+	}).Info("CHRob API client configured")
+	if chrobEnv == "production" {
+		log.Warn("CHRob API base URL points to production")
+	}
 
 	// Save the environment variables to the .env file
 	err := config.SaveEnv("./.env")
@@ -51,13 +76,16 @@ func main() {
 	// Start the periodic milestone updater
 	// chrobinson.StartMilestoneUpdater(apiClient)
 
-	// Prototype default: do not require databases for the UI feed.
-	// Set `ENABLE_DATABASES=true` to restore the old behavior.
-	if envTruthy("ENABLE_DATABASES", false) {
-		// Initialize the SQLite database
+	// Split local SQLite and platform MySQL initialization so offer tracking can use
+	// SQLite without forcing the platform DB connection in local/prototype runs.
+	enableDatabases := envTruthy(config.EnableDatabases, false)
+	enableSQLiteDB := envTruthy(config.EnableSQLiteDB, enableDatabases)
+	enablePlatformDB := envTruthy(config.EnablePlatformDB, enableDatabases)
+	if enableSQLiteDB {
 		db.InitializeDatabase()
+	}
 
-		// Initialize the MySQL database
+	if enablePlatformDB {
 		err = db.InitializePlatformDatabase()
 		if err != nil {
 			log.Fatalf("Failed to initialize platform database: %v", err)

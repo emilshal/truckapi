@@ -19,17 +19,24 @@ import (
 
 // Constants for environment variable keys
 const (
-	CHRobClientID     = "CHROB_CLIENT_ID"
-	CHRobClientSecret = "CHROB_CLIENT_SECRET"
-	CHRobBaseURL      = "CHROB_API_BASE_URL"
-	CHRobTokenUrl     = "CHROB_TOKEN_URL"
-	CHRobAudience     = "CHROB_AUDIENCE"
-	CHRobGrantType    = "CHROB_GRANT_TYPE"
-	ServerListenAddr  = "SERVER_LISTEN_ADDR"
-	CHRobAccessToken  = "CHROB_ACCESS_TOKEN"
-	CHRobCarrierCode  = "CHROB_CARRIER_CODE"
-	APIKey            = "API_KEY"
-	OpenAIAPIKey      = "OPENAI_API_KEY"
+	CHRobClientID            = "CHROB_CLIENT_ID"
+	CHRobClientSecret        = "CHROB_CLIENT_SECRET"
+	CHRobBaseURL             = "CHROB_API_BASE_URL"
+	CHRobTokenUrl            = "CHROB_TOKEN_URL"
+	CHRobAudience            = "CHROB_AUDIENCE"
+	CHRobGrantType           = "CHROB_GRANT_TYPE"
+	ServerListenAddr         = "SERVER_LISTEN_ADDR"
+	CHRobAccessToken         = "CHROB_ACCESS_TOKEN"
+	CHRobCarrierCode         = "CHROB_CARRIER_CODE"
+	CHRobEnv                 = "CHROB_ENV"
+	CHRobCallbackBearerToken = "CHROB_CALLBACK_BEARER_TOKEN"
+	CHRobCallbackAllowAPIKey = "CHROB_CALLBACK_ALLOW_API_KEY"
+	APIKey                   = "API_KEY"
+	OpenAIAPIKey             = "OPENAI_API_KEY"
+	EnableDatabases          = "ENABLE_DATABASES"
+	EnableSQLiteDB           = "ENABLE_SQLITE_DB"
+	EnablePlatformDB         = "ENABLE_PLATFORM_DB"
+	BidIdempotencyTTLMinutes = "BID_IDEMPOTENCY_TTL_MINUTES"
 	// 🔧 Truckstop config
 	TruckstopUsername      = "TRUCKSTOP_USERNAME"
 	TruckstopPassword      = "TRUCKSTOP_PASSWORD"
@@ -46,22 +53,29 @@ var (
 	Env              map[string]string
 	DB               *gorm.DB
 	DefaultEnvValues = map[string]string{
-		"CHROB_CLIENT_ID":     "0oas6jwy40YOo5T4g357",
-		"CHROB_CLIENT_SECRET": "_a67bEwQ-gTeS5FP0TnYn2iJXe1xefNnn3RSw7Wz",
-		"CHROB_API_BASE_URL":  "https://api.navisphere.com",                // ✅ prod
-		"CHROB_TOKEN_URL":     "https://api.navisphere.com/v1/oauth/token", // ✅ prod
-		"CHROB_AUDIENCE":      "https://inavisphere.chrobinson.com",
-		"CHROB_GRANT_TYPE":    "client_credentials",
-		"SERVER_LISTEN_ADDR":  ":8081",
-		"CHROB_ACCESS_TOKEN":  "",
-		"CHROB_CARRIER_CODE":  "T6263835",
-		"API_KEY":             "",
-		"OPENAI_API_KEY":      "",
-		LoaderAPIBaseURL:      "https://core.hfield.net",
-		LoaderOrdersBaseURL:   "",
-		LoaderAPIKey:          "loaderBMwuIUZKtyH8fetLykDch07dxfciUZZ8lrGqOfmVaAjnXAhcwIRIdBCyhg",
-		LoaderPostWorkers:     "16",
-		LoaderPostMaxRetries:  "3",
+		"CHROB_CLIENT_ID":        "0oas6jwy40YOo5T4g357",
+		"CHROB_CLIENT_SECRET":    "_a67bEwQ-gTeS5FP0TnYn2iJXe1xefNnn3RSw7Wz",
+		"CHROB_API_BASE_URL":     "https://api.navisphere.com",                // ✅ prod
+		"CHROB_TOKEN_URL":        "https://api.navisphere.com/v1/oauth/token", // ✅ prod
+		"CHROB_AUDIENCE":         "https://inavisphere.chrobinson.com",
+		"CHROB_GRANT_TYPE":       "client_credentials",
+		"SERVER_LISTEN_ADDR":     ":8081",
+		"CHROB_ACCESS_TOKEN":     "",
+		"CHROB_CARRIER_CODE":     "T6263835",
+		CHRobEnv:                 "",
+		CHRobCallbackBearerToken: "",
+		CHRobCallbackAllowAPIKey: "true",
+		"API_KEY":                "",
+		"OPENAI_API_KEY":         "",
+		EnableDatabases:          "false",
+		EnableSQLiteDB:           "",
+		EnablePlatformDB:         "",
+		BidIdempotencyTTLMinutes: "60",
+		LoaderAPIBaseURL:         "https://core.hfield.net",
+		LoaderOrdersBaseURL:      "",
+		LoaderAPIKey:             "loaderBMwuIUZKtyH8fetLykDch07dxfciUZZ8lrGqOfmVaAjnXAhcwIRIdBCyhg",
+		LoaderPostWorkers:        "16",
+		LoaderPostMaxRetries:     "3",
 	}
 
 	EnvKeys = []string{
@@ -74,8 +88,15 @@ var (
 		"SERVER_LISTEN_ADDR",
 		"CHROB_ACCESS_TOKEN",
 		"CHROB_CARRIER_CODE",
+		CHRobEnv,
+		CHRobCallbackBearerToken,
+		CHRobCallbackAllowAPIKey,
 		"API_KEY",
 		"OPENAI_API_KEY",
+		EnableDatabases,
+		EnableSQLiteDB,
+		EnablePlatformDB,
+		BidIdempotencyTTLMinutes,
 		TruckstopUsername,
 		TruckstopPassword,
 		TruckstopIntegrationID,
