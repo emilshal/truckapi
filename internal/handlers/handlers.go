@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"strconv"
 	"strings"
 	"time"
@@ -281,15 +282,24 @@ func FetchAllOffersHandler(c *fiber.Ctx) error {
 
 // OfferResponseHandler handles the callback for offer responses.
 func OfferResponseHandler(c *fiber.Ctx) error {
-	var offerResponse chrobinson.OfferResponse
-	if err := c.BodyParser(&offerResponse); err != nil {
+	var offerResponse chrobinson.OfferResponseCallback
+	if err := json.Unmarshal(c.Body(), &offerResponse); err != nil {
 		logrus.WithError(err).Error("Failed to parse offer response")
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"error": "Invalid offer response data",
 		})
 	}
 
-	logrus.Infof("Received offer response: %+v", offerResponse)
+	logrus.WithFields(logrus.Fields{
+		"loadNumber":     offerResponse.LoadNumber.Int(),
+		"carrierCode":    offerResponse.CarrierCode,
+		"offerRequestId": offerResponse.OfferRequestId,
+		"offerId":        offerResponse.OfferId.Int(),
+		"offerResult":    offerResponse.OfferResult,
+		"price":          offerResponse.Price.Int(),
+		"currencyCode":   offerResponse.CurrencyCode,
+		"rejectReasons":  offerResponse.RejectReasons,
+	}).Info("Received offer response")
 	if offerResponse.OfferRequestId == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"error": "offerRequestId is required",
@@ -317,11 +327,11 @@ func OfferResponseHandler(c *fiber.Ctx) error {
 	if err := db.DB.
 		Where(chrobinson.OfferResponse{OfferRequestId: offerResponse.OfferRequestId}).
 		Assign(map[string]interface{}{
-			"load_number":      offerResponse.LoadNumber,
+			"load_number":      offerResponse.LoadNumber.Int(),
 			"carrier_code":     offerResponse.CarrierCode,
-			"offer_id":         offerResponse.OfferId,
+			"offer_id":         offerResponse.OfferId.Int(),
 			"offer_result":     offerResponse.OfferResult,
-			"price":            offerResponse.Price,
+			"price":            offerResponse.Price.Int(),
 			"currency_code":    offerResponse.CurrencyCode,
 			"reject_reasons":   rejectReasonsJSON,
 			"status":           newStatus,
@@ -340,23 +350,54 @@ func OfferResponseHandler(c *fiber.Ctx) error {
 
 // ShipmentDetailsHandler handles the callback for shipment details.
 func ShipmentDetailsHandler(c *fiber.Ctx) error {
-	var shipmentDetails chrobinson.ShipmentDetails
-	if err := c.BodyParser(&shipmentDetails); err != nil {
+	rawBody := append([]byte(nil), c.Body()...)
+	var shipmentDetails chrobinson.ShipmentDetailsCallback
+	if err := json.Unmarshal(rawBody, &shipmentDetails); err != nil {
 		log.WithError(err).Error("Failed to parse shipment details")
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"error": "Invalid shipment details data",
 		})
 	}
 
-	log.Infof("Received shipment details: %+v", shipmentDetails)
+	log.WithFields(log.Fields{
+		"loadNumber":   shipmentDetails.LoadNumber.String(),
+		"carrierCode":  shipmentDetails.CarrierCode,
+		"scac":         shipmentDetails.Scac,
+		"clientId":     shipmentDetails.ClientId,
+		"eventType":    shipmentDetails.Event.EventType,
+		"eventSubType": shipmentDetails.Event.EventSubType,
+		"mode":         shipmentDetails.Event.Mode,
+	}).Info("Received shipment details callback")
 
-	// Process the shipment details accordingly
-	// For example, update your database, notify stakeholders, etc.
-	// Implementation of this depends on your business logic.
+	if db.DB == nil {
+		log.Error("SQLite database is not initialized for shipment details callback")
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Database is not initialized",
+		})
+	}
 
-	return c.Status(fiber.StatusOK).JSON(fiber.Map{
-		"message": "Shipment details received successfully",
-	})
+	record := chrobinson.ShipmentDetailsRecord{
+		LoadNumber:   shipmentDetails.LoadNumber.String(),
+		CarrierCode:  shipmentDetails.CarrierCode,
+		Scac:         shipmentDetails.Scac,
+		ClientID:     shipmentDetails.ClientId,
+		CallbackTime: shipmentDetails.Time,
+		EventTime:    shipmentDetails.EventTime,
+		EventType:    shipmentDetails.Event.EventType,
+		EventSubType: shipmentDetails.Event.EventSubType,
+		Mode:         shipmentDetails.Event.Mode,
+		ActivityDate: shipmentDetails.Event.ActivityDate,
+		RawPayload:   string(rawBody),
+	}
+	if err := db.DB.Create(&record).Error; err != nil {
+		log.WithError(err).Error("Failed to persist shipment details callback")
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to persist shipment details callback",
+		})
+	}
+
+	c.Set(fiber.HeaderContentType, "text/plain; charset=utf-8")
+	return c.Status(fiber.StatusOK).SendString("ok")
 }
 
 // Handles the route for submitting a load offer.

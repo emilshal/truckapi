@@ -163,8 +163,9 @@ func fallbackOrderNumberFromDedupKey(key string) string {
 }
 
 type chrobPageItem struct {
-	Key   string
-	Order loader.LoaderOrder
+	Key        string
+	Order      loader.LoaderOrder
+	LoadNumber int
 }
 
 func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error {
@@ -316,6 +317,7 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 			totalShipments += len(searchResponse.Results)
 
 			var pageItems []chrobPageItem
+			var pageAuditRows []db.ChrobLoaderAudit
 			var locationPageUnique int
 			var zeroLoadNumber int
 			var locationDupSkipped int
@@ -347,6 +349,7 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 
 				if _, exists := locationSeenKeys[key]; exists {
 					locationDupSkipped++
+					pageAuditRows = append(pageAuditRows, newChrobLoaderAuditRow(pageNow, "skipped_location_duplicate", "duplicate within location/page stream", pageIndex, lat, lng, key, shipment, orderPayload))
 					continue
 				}
 				locationSeenKeys[key] = struct{}{}
@@ -354,18 +357,21 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 
 				if _, exists := cycleSeenKeys[key]; exists {
 					cycleDupSkipped++
+					pageAuditRows = append(pageAuditRows, newChrobLoaderAuditRow(pageNow, "skipped_cycle_duplicate", "duplicate across overlapping searches in same runner cycle", pageIndex, lat, lng, key, shipment, orderPayload))
 					continue
 				}
 				cycleSeenKeys[key] = struct{}{}
 
 				if (enableLoaderPost || enableUIFeed) && chrobRecentSentCache.SeenRecently(key, pageNow) {
 					recentDupSkipped++
+					pageAuditRows = append(pageAuditRows, newChrobLoaderAuditRow(pageNow, "skipped_recent_duplicate", "suppressed by in-memory recent sent cache", pageIndex, lat, lng, key, shipment, orderPayload))
 					continue
 				}
 
 				pageItems = append(pageItems, chrobPageItem{
-					Key:   key,
-					Order: orderPayload,
+					Key:        key,
+					Order:      orderPayload,
+					LoadNumber: shipment.LoadNumber,
 				})
 
 				if name := strings.TrimSpace(shipment.Contact.CompanyName); name != "" {
@@ -419,6 +425,7 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 						if _, exists := sentSince[item.Key]; exists {
 							sqliteDupSkipped++
 							chrobRecentSentCache.Mark(item.Key, pageNow)
+							pageAuditRows = append(pageAuditRows, newChrobLoaderAuditRowFromOrder(pageNow, "skipped_sqlite_duplicate", "suppressed by persistent SQLite dedupe window", pageIndex, lat, lng, item.Key, item.LoadNumber, item.Order))
 							continue
 						}
 						filtered = append(filtered, item)
@@ -486,6 +493,7 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 							"lat":         lat,
 							"lng":         lng,
 						}).Error("Failed to post CHRob order to Loader API")
+						pageAuditRows = append(pageAuditRows, newChrobLoaderAuditRowFromOrder(pageNow, "posted_failure", result.Err.Error(), pageIndex, lat, lng, "", 0, result.Order))
 						continue
 					}
 					ok++
@@ -494,6 +502,7 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 						item := pageItems[result.Index]
 						chrobRecentSentCache.Mark(item.Key, pageNow)
 						markedRecent++
+						pageAuditRows = append(pageAuditRows, newChrobLoaderAuditRowFromOrder(pageNow, "posted_success", "", pageIndex, lat, lng, item.Key, item.LoadNumber, item.Order))
 						sentMarks = append(sentMarks, db.ChrobSentMark{
 							Key:         item.Key,
 							OrderNumber: item.Order.OrderNumber,
@@ -510,6 +519,14 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 						"marks":     len(sentMarks),
 					}).Error("Failed to persist CHRob sent dedupe marks to SQLite")
 				}
+				if err := db.ChrobInsertLoaderAuditBatch(pageAuditRows); err != nil {
+					log.WithError(err).WithFields(log.Fields{
+						"pageIndex": pageIndex,
+						"lat":       lat,
+						"lng":       lng,
+						"rows":      len(pageAuditRows),
+					}).Error("Failed to persist CHRob loader audit rows")
+				}
 
 				log.WithFields(log.Fields{
 					"pageIndex":     pageIndex,
@@ -524,6 +541,23 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 			} else if !enableLoaderPost && len(pageItems) > 0 && enableUIFeed {
 				// In UI-only mode, mark recently seen keys after enqueue below so we still suppress
 				// duplicates across runner cycles without requiring LoaderAPI posts.
+				if err := db.ChrobInsertLoaderAuditBatch(pageAuditRows); err != nil {
+					log.WithError(err).WithFields(log.Fields{
+						"pageIndex": pageIndex,
+						"lat":       lat,
+						"lng":       lng,
+						"rows":      len(pageAuditRows),
+					}).Error("Failed to persist CHRob loader audit rows")
+				}
+			} else if len(pageAuditRows) > 0 {
+				if err := db.ChrobInsertLoaderAuditBatch(pageAuditRows); err != nil {
+					log.WithError(err).WithFields(log.Fields{
+						"pageIndex": pageIndex,
+						"lat":       lat,
+						"lng":       lng,
+						"rows":      len(pageAuditRows),
+					}).Error("Failed to persist CHRob loader audit rows")
+				}
 			}
 
 			// Also load the in-memory feed so the UI can page through results.
@@ -724,6 +758,61 @@ func mapShipmentToLoaderOrder(shipment chrobinson.ShipmentInfo) loader.LoaderOrd
 	}
 }
 
+func newChrobLoaderAuditRow(
+	occurredAt time.Time,
+	action string,
+	reason string,
+	pageIndex int,
+	searchLat float64,
+	searchLng float64,
+	key string,
+	shipment chrobinson.ShipmentInfo,
+	order loader.LoaderOrder,
+) db.ChrobLoaderAudit {
+	return newChrobLoaderAuditRowFromOrder(
+		occurredAt,
+		action,
+		reason,
+		pageIndex,
+		searchLat,
+		searchLng,
+		key,
+		shipment.LoadNumber,
+		order,
+	)
+}
+
+func newChrobLoaderAuditRowFromOrder(
+	occurredAt time.Time,
+	action string,
+	reason string,
+	pageIndex int,
+	searchLat float64,
+	searchLng float64,
+	key string,
+	loadNumber int,
+	order loader.LoaderOrder,
+) db.ChrobLoaderAudit {
+	return db.ChrobLoaderAudit{
+		OccurredAt:       occurredAt.UTC(),
+		Action:           action,
+		Reason:           reason,
+		Source:           order.Source,
+		LoadNumber:       loadNumber,
+		OrderNumber:      order.OrderNumber,
+		DedupeKey:        key,
+		OriginCity:       order.PickupCity,
+		OriginState:      order.PickupState,
+		OriginZip:        order.PickupZip,
+		DestinationCity:  order.DeliveryCity,
+		DestinationState: order.DeliveryState,
+		DestinationZip:   order.DeliveryZip,
+		SearchLat:        searchLat,
+		SearchLng:        searchLng,
+		PageIndex:        pageIndex,
+	}
+}
+
 func parseFloatField(value string) (float64, error) {
 	return strconv.ParseFloat(strings.TrimSpace(value), 64)
 }
@@ -780,20 +869,15 @@ func mapTruckType(shipment chrobinson.ShipmentInfo, length float64) (string, int
 		original = "UNKNOWN"
 	}
 
-	// Preserve CHRob's truck/equipment type string as-is for Loader visibility,
-	// but keep a best-effort TruckTypeId mapping for Loader compatibility.
-	truckTypeID := 0
-	lower := strings.ToLower(original)
-	switch {
-	case strings.Contains(lower, "sprinter"):
-		truckTypeID = 3
-	case length > 26:
-		truckTypeID = 2
-	case length > 0:
-		truckTypeID = 1
+	// Default CHRob loads to Loader truckTypeId 5, except small van loads.
+	if strings.Contains(strings.ToLower(original), "van") &&
+		shipment.Weight.Pounds < 10000 &&
+		length > 0 &&
+		length <= 26 {
+		return original, 2, original
 	}
 
-	return original, truckTypeID, original
+	return original, 5, original
 }
 
 func contactMethodValue(contact chrobinson.Contact, method string) string {

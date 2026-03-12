@@ -62,7 +62,7 @@ func InitializeRoutes(apiClient *chrobinson.APIClient, feed *uifeed.Store) *fibe
 	fiberApp.Post("/offerResponse/callback/here", middlewares.OfferCallbackAuthMiddleware(), handlers.OfferResponseHandler)
 
 	//Post endpoint for receiving all of our booked shipment details
-	fiberApp.Post("/shipmentDetails/callback/here", handlers.ShipmentDetailsHandler)
+	fiberApp.Post("/shipmentDetails/callback/here", middlewares.OfferCallbackAuthMiddleware(), handlers.ShipmentDetailsHandler)
 
 	// Route for combined shipment info
 	fiberApp.Get("/v1/shipments/combined", handlers.CombinedShipmentInfoHandler(apiClient))

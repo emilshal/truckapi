@@ -47,7 +47,7 @@ func InitializeDatabase() {
 	}
 	log.WithField("path", dbPath).Info("SQLite database connection established.")
 
-	err = DB.AutoMigrate(&chrobinson.ShipmentInfo{}, &chrobinson.OfferResponse{})
+	err = DB.AutoMigrate(&chrobinson.ShipmentInfo{}, &chrobinson.OfferResponse{}, &chrobinson.ShipmentDetailsRecord{}, &ChrobLoaderAudit{})
 	if err != nil {
 		log.Fatalf("Error migrating SQLite database: %v", err)
 	}

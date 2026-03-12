@@ -4,6 +4,7 @@ import (
 	"crypto/subtle"
 	"log"
 	"strings"
+	"sync"
 	"truckapi/pkg/config"
 
 	"github.com/gofiber/fiber/v2"
@@ -59,6 +60,8 @@ func bearerToken(c *fiber.Ctx) string {
 	return strings.TrimSpace(parts[1])
 }
 
+var callbackNoAuthWarning sync.Once
+
 // APIKeyMiddleware returns a middleware handler function for API key validation
 func APIKeyMiddleware() fiber.Handler {
 	return func(c *fiber.Ctx) error {
@@ -85,43 +88,39 @@ func OfferCallbackAuthMiddleware() fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		expectedBearer := strings.TrimSpace(config.GetEnv(config.CHRobCallbackBearerToken, ""))
 		allowAPIKey := envTruthy(config.CHRobCallbackAllowAPIKey, true)
+		apiKeyHeader := strings.TrimSpace(c.Get("X-API-KEY"))
 
 		if expectedBearer != "" {
 			got := bearerToken(c)
 			if got != "" && subtle.ConstantTimeCompare([]byte(got), []byte(expectedBearer)) == 1 {
 				return c.Next()
 			}
-			if !allowAPIKey {
+			if allowAPIKey && apiKeyValid(c) {
+				return c.Next()
+			}
+			if !allowAPIKey || apiKeyHeader == "" {
 				log.Println("Invalid or missing callback bearer token")
 				return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 					"error": "Invalid or missing bearer token",
 				})
 			}
-		}
-
-		if apiKeyValid(c) {
-			return c.Next()
-		}
-
-		if expectedBearer != "" {
 			log.Println("Callback auth failed (bearer/api key)")
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 				"error": "Authentication failed",
 			})
 		}
 
-		if allowAPIKey {
-			if strings.TrimSpace(c.Get("X-API-KEY")) == "" {
-				log.Println("API key missing")
-				return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "API key missing"})
+		if apiKeyHeader != "" {
+			if apiKeyValid(c) {
+				return c.Next()
 			}
 			log.Println("Invalid API key")
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Invalid API key"})
 		}
 
-		log.Println("Offer callback auth misconfigured: no bearer token and API key fallback disabled")
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Offer callback auth is misconfigured",
+		callbackNoAuthWarning.Do(func() {
+			log.Println("CHRob callback auth is not configured; allowing callback without authentication")
 		})
+		return c.Next()
 	}
 }

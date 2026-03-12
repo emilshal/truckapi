@@ -163,7 +163,7 @@ func setupOfferResponseDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
-	if err := gdb.AutoMigrate(&chrobinson.OfferResponse{}); err != nil {
+	if err := gdb.AutoMigrate(&chrobinson.OfferResponse{}, &chrobinson.ShipmentDetailsRecord{}); err != nil {
 		t.Fatalf("migrate sqlite: %v", err)
 	}
 	db.DB = gdb
@@ -248,5 +248,69 @@ func TestOfferResponseHandler_ReturnsPlainText2xx(t *testing.T) {
 	contentType := resp.Header.Get("Content-Type")
 	if !strings.Contains(contentType, "text/plain") {
 		t.Fatalf("expected text/plain content type, got %q", contentType)
+	}
+}
+
+func TestOfferResponseHandler_AcceptsStringNumbers(t *testing.T) {
+	setupOfferResponseDB(t)
+	app := newOfferTestApp(nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/offerResponse/callback/here",
+		bytes.NewBufferString(`{"loadNumber":"546698145","carrierCode":"T6263835","offerRequestId":"req-string-numbers","offerId":"123","offerResult":"Accepted","price":"2100","currencyCode":"USD","rejectReasons":[]}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := app.Test(req, 5000)
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var record chrobinson.OfferResponse
+	if err := db.DB.Where("offer_request_id = ?", "req-string-numbers").First(&record).Error; err != nil {
+		t.Fatalf("query record: %v", err)
+	}
+	if record.LoadNumber != 546698145 {
+		t.Fatalf("expected loadNumber=546698145, got %d", record.LoadNumber)
+	}
+	if record.OfferId != 123 {
+		t.Fatalf("expected offerId=123, got %d", record.OfferId)
+	}
+	if record.Price != 2100 {
+		t.Fatalf("expected price=2100, got %d", record.Price)
+	}
+}
+
+func TestShipmentDetailsHandler_PersistsCallback(t *testing.T) {
+	setupOfferResponseDB(t)
+
+	app := fiber.New()
+	app.Post("/shipmentDetails/callback/here", ShipmentDetailsHandler)
+
+	body := `{"time":"2026-03-11","carrierCode":"T6263835","scac":"ABCD","loadNumber":"546698145","clientId":"client-1","eventTime":"2026-03-11","event":{"eventType":"LOAD DETAIL CHANGED","eventSubType":"Stop Created","loadNumber":"546698145","mode":"V","activityDate":"2026-03-11T16:04:15Z","notes":"detail callback"}}`
+	req := httptest.NewRequest(http.MethodPost, "/shipmentDetails/callback/here", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := app.Test(req, 5000)
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var record chrobinson.ShipmentDetailsRecord
+	if err := db.DB.Where("load_number = ?", "546698145").First(&record).Error; err != nil {
+		t.Fatalf("query record: %v", err)
+	}
+	if record.EventType != "LOAD DETAIL CHANGED" {
+		t.Fatalf("expected eventType to persist, got %q", record.EventType)
+	}
+	if record.EventSubType != "Stop Created" {
+		t.Fatalf("expected eventSubType to persist, got %q", record.EventSubType)
+	}
+	if !strings.Contains(record.RawPayload, `"loadNumber":"546698145"`) {
+		t.Fatalf("expected raw payload to be stored, got %q", record.RawPayload)
 	}
 }
