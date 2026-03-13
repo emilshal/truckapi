@@ -143,3 +143,18 @@ type ShipmentDetailsRecord struct {
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
 }
+
+// LoadBookingRecord stores outbound booking attempts so they can be reviewed later.
+type LoadBookingRecord struct {
+	ID                    uint      `gorm:"primaryKey" json:"id"`
+	LoadNumber            int       `gorm:"index" json:"loadNumber"`
+	CarrierCode           string    `gorm:"index" json:"carrierCode"`
+	Status                string    `gorm:"index" json:"status"`
+	EmptyDateTime         string    `json:"emptyDateTime"`
+	RateConfirmationName  string    `json:"rateConfirmationName"`
+	RateConfirmationEmail string    `json:"rateConfirmationEmail"`
+	AvailableLoadCosts    string    `gorm:"type:text" json:"availableLoadCosts"`
+	RawRequest            string    `gorm:"type:text" json:"rawRequest"`
+	CreatedAt             time.Time `json:"createdAt"`
+	UpdatedAt             time.Time `json:"updatedAt"`
+}

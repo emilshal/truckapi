@@ -83,6 +83,8 @@ func InitializeRoutes(apiClient *chrobinson.APIClient, feed *uifeed.Store) *fibe
 	})
 
 	fiberApp.Get("/v1/offers", handlers.FetchAllOffersHandler)
+	fiberApp.Get("/v1/bookings", handlers.FetchAllBookingsHandler)
+	fiberApp.Get("/v1/shipment-details", handlers.FetchAllShipmentDetailsHandler)
 
 	return fiberApp
 }

@@ -199,8 +199,16 @@ func BookLoadHandler(apiClient *chrobinson.APIClient) fiber.Handler {
 			})
 		}
 
+		rawRequest, err := json.Marshal(bookingRequest)
+		if err != nil {
+			log.WithError(err).Error("Failed to marshal booking request")
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error": "Failed to process booking request",
+			})
+		}
+
 		// Use HandleAPICall to make the API call and handle token refresh if needed.
-		err := chrobinson.HandleAPICall(apiClient, func() error {
+		err = chrobinson.HandleAPICall(apiClient, func() error {
 			return apiClient.BookLoad(bookingRequest)
 		})
 
@@ -218,9 +226,40 @@ func BookLoadHandler(apiClient *chrobinson.APIClient) fiber.Handler {
 			})
 		}
 
+		persisted := false
+		if db.DB == nil {
+			log.Error("SQLite database is not initialized for booking persistence")
+		} else {
+			loadCostsJSON, marshalErr := json.Marshal(bookingRequest.AvailableLoadCosts)
+			if marshalErr != nil {
+				log.WithError(marshalErr).Error("Failed to marshal availableLoadCosts for booking persistence")
+			} else {
+				record := chrobinson.LoadBookingRecord{
+					LoadNumber:            bookingRequest.LoadNumber,
+					CarrierCode:           bookingRequest.CarrierCode,
+					Status:                "accepted",
+					EmptyDateTime:         bookingRequest.EmptyDateTime,
+					RateConfirmationName:  bookingRequest.RateConfirmation.Name,
+					RateConfirmationEmail: bookingRequest.RateConfirmation.Email,
+					AvailableLoadCosts:    string(loadCostsJSON),
+					RawRequest:            string(rawRequest),
+				}
+				if err := db.DB.Create(&record).Error; err != nil {
+					log.WithError(err).Error("Failed to persist booking record")
+				} else {
+					persisted = true
+				}
+			}
+		}
+
 		// If everything was successful, return an appropriate response
 		return c.Status(fiber.StatusAccepted).JSON(fiber.Map{
-			"message": "Load booked successfully",
+			"message":                 "Load booked successfully",
+			"loadNumber":              bookingRequest.LoadNumber,
+			"carrierCode":             bookingRequest.CarrierCode,
+			"status":                  "accepted",
+			"persisted":               persisted,
+			"awaitingShipmentDetails": true,
 		})
 	}
 }
@@ -256,7 +295,7 @@ func OfferLoadHandler(c *fiber.Ctx) error {
 func FetchAllOffersHandler(c *fiber.Ctx) error {
 	var offers []chrobinson.OfferResponse
 
-	if err := db.DB.Find(&offers).Error; err != nil {
+	if err := db.DB.Order("id desc").Find(&offers).Error; err != nil {
 		log.Println("Failed to fetch offers from the database:", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Failed to fetch offers from the database",
@@ -278,12 +317,43 @@ func FetchAllOffersHandler(c *fiber.Ctx) error {
 	})
 }
 
+func FetchAllShipmentDetailsHandler(c *fiber.Ctx) error {
+	var records []chrobinson.ShipmentDetailsRecord
+
+	if err := db.DB.Order("id desc").Find(&records).Error; err != nil {
+		log.WithError(err).Error("Failed to fetch shipment detail callbacks from the database")
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to fetch shipment detail callbacks from the database",
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"shipmentDetails": records,
+	})
+}
+
+func FetchAllBookingsHandler(c *fiber.Ctx) error {
+	var records []chrobinson.LoadBookingRecord
+
+	if err := db.DB.Order("id desc").Find(&records).Error; err != nil {
+		log.WithError(err).Error("Failed to fetch booking records from the database")
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to fetch booking records from the database",
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"bookings": records,
+	})
+}
+
 // OfferResponseHandler handles the callback for offer responses.
 
 // OfferResponseHandler handles the callback for offer responses.
 func OfferResponseHandler(c *fiber.Ctx) error {
+	rawBody := append([]byte(nil), c.Body()...)
 	var offerResponse chrobinson.OfferResponseCallback
-	if err := json.Unmarshal(c.Body(), &offerResponse); err != nil {
+	if err := json.Unmarshal(rawBody, &offerResponse); err != nil {
 		logrus.WithError(err).Error("Failed to parse offer response")
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"error": "Invalid offer response data",
@@ -335,6 +405,7 @@ func OfferResponseHandler(c *fiber.Ctx) error {
 			"currency_code":    offerResponse.CurrencyCode,
 			"reject_reasons":   rejectReasonsJSON,
 			"status":           newStatus,
+			"raw_payload":      string(rawBody),
 			"offer_request_id": offerResponse.OfferRequestId,
 		}).
 		FirstOrCreate(&record).Error; err != nil {

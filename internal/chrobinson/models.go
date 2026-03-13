@@ -816,6 +816,7 @@ type OfferResponse struct {
 	RejectReasons    []string `gorm:"-" json:"rejectReasons"`         // Ignore by GORM, handled manually
 	RejectReasonsStr string   `json:"-" gorm:"column:reject_reasons"` // JSON string representation
 	Status           string   `json:"status"`
+	RawPayload       string   `json:"rawPayload,omitempty" gorm:"type:text"`
 	CreatedAt        string   `json:"created_at"`
 	UpdatedAt        string   `json:"updated_at"`
 }

@@ -31,7 +31,11 @@ func newTestCHRobAPIClient(t *testing.T, h http.HandlerFunc) (*chrobinson.APICli
 func newOfferTestApp(apiClient *chrobinson.APIClient) *fiber.App {
 	app := fiber.New()
 	app.Post("/v1/shipments/:loadNumber/offers", SubmitLoadOfferHandler(apiClient))
+	app.Post("/v1/shipments/books", BookLoadHandler(apiClient))
 	app.Post("/offerResponse/callback/here", OfferResponseHandler)
+	app.Get("/v1/bookings", FetchAllBookingsHandler)
+	app.Get("/v1/shipment-details", FetchAllShipmentDetailsHandler)
+	app.Post("/shipmentDetails/callback/here", ShipmentDetailsHandler)
 	return app
 }
 
@@ -163,7 +167,7 @@ func setupOfferResponseDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
-	if err := gdb.AutoMigrate(&chrobinson.OfferResponse{}, &chrobinson.ShipmentDetailsRecord{}); err != nil {
+	if err := gdb.AutoMigrate(&chrobinson.OfferResponse{}, &chrobinson.ShipmentDetailsRecord{}, &chrobinson.LoadBookingRecord{}); err != nil {
 		t.Fatalf("migrate sqlite: %v", err)
 	}
 	db.DB = gdb
@@ -176,6 +180,87 @@ func setupOfferResponseDB(t *testing.T) *gorm.DB {
 		}
 	})
 	return gdb
+}
+
+func TestBookLoadHandler_PersistsBookingRecord(t *testing.T) {
+	setupOfferResponseDB(t)
+	client, _ := newTestCHRobAPIClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/shipments/books" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusAccepted)
+	})
+
+	app := newOfferTestApp(client)
+	req := httptest.NewRequest(http.MethodPost, "/v1/shipments/books", bytes.NewBufferString(`{
+		"loadNumber": 546698145,
+		"carrierCode": "T6263835",
+		"emptyDateTime": "2026-03-13T15:00:00Z",
+		"emptyLocation": {"city":"Kansas City","state":"MO","country":"US","zip":"64155"},
+		"availableLoadCosts": [{"type":"LINEHAUL","code":"BIN","description":"BIN","sourceCostPerUnit":2100,"units":1,"currencyCode":"USD"}],
+		"rateConfirmation": {"email":"ops@example.com","name":"Ops"}
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := app.Test(req, 5000)
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusAccepted {
+		t.Fatalf("expected 202, got %d", resp.StatusCode)
+	}
+
+	var record chrobinson.LoadBookingRecord
+	if err := db.DB.Where("load_number = ?", 546698145).First(&record).Error; err != nil {
+		t.Fatalf("query record: %v", err)
+	}
+	if record.Status != "accepted" {
+		t.Fatalf("expected status accepted, got %q", record.Status)
+	}
+	if !strings.Contains(record.RawRequest, "\"loadNumber\":546698145") {
+		t.Fatalf("expected raw request to contain load number, got %q", record.RawRequest)
+	}
+}
+
+func TestShipmentDetailsHandler_FetchEndpoint(t *testing.T) {
+	setupOfferResponseDB(t)
+	app := newOfferTestApp(nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/shipmentDetails/callback/here", bytes.NewBufferString(`{
+		"time":"2026-03-13",
+		"carrierCode":"T6263835",
+		"scac":"ABCD",
+		"loadNumber":"546698145",
+		"clientId":"client-1",
+		"eventTime":"2026-03-13",
+		"event":{"eventType":"LOAD DETAIL CHANGED","eventSubType":"Stop Created","loadNumber":"546698145","activityDate":"2026-03-13T15:00:00Z","mode":"V"}
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := app.Test(req, 5000)
+	if err != nil {
+		t.Fatalf("shipment details callback app.Test: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected 200 from callback, got %d", resp.StatusCode)
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/v1/shipment-details", nil)
+	listResp, err := app.Test(listReq, 5000)
+	if err != nil {
+		t.Fatalf("shipment details list app.Test: %v", err)
+	}
+	if listResp.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected 200 from list, got %d", listResp.StatusCode)
+	}
+
+	var body map[string][]map[string]interface{}
+	if err := json.NewDecoder(listResp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(body["shipmentDetails"]) != 1 {
+		t.Fatalf("expected 1 shipment detail record, got %d", len(body["shipmentDetails"]))
+	}
 }
 
 func TestOfferResponseHandler_StatusMapping(t *testing.T) {
