@@ -4,8 +4,8 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONTAINER_ID="$(docker compose -f "$ROOT_DIR/compose.yml" ps -q truckapi)"
-TMP_DIR="$ROOT_DIR/.tmp/chrob_audit_snapshot"
-TMP_DB="$TMP_DIR/truckapi.db"
+TMP_DIR=""
+TMP_DB=""
 
 usage() {
   cat <<'EOF'
@@ -34,15 +34,21 @@ require_bin() {
 }
 
 snapshot_db() {
-  mkdir -p "$TMP_DIR"
   if [[ -z "$CONTAINER_ID" ]]; then
     echo "truckapi container is not running" >&2
     exit 1
   fi
-  rm -f "$TMP_DIR"/truckapi.db "$TMP_DIR"/truckapi.db-wal "$TMP_DIR"/truckapi.db-shm
+  TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/chrob_audit.XXXXXX")"
+  TMP_DB="$TMP_DIR/truckapi.db"
   docker cp "$CONTAINER_ID:/var/lib/truckapi/truckapi.db" "$TMP_DB"
   docker cp "$CONTAINER_ID:/var/lib/truckapi/truckapi.db-wal" "$TMP_DIR/truckapi.db-wal" >/dev/null 2>&1 || true
   docker cp "$CONTAINER_ID:/var/lib/truckapi/truckapi.db-shm" "$TMP_DIR/truckapi.db-shm" >/dev/null 2>&1 || true
+}
+
+cleanup() {
+  if [[ -n "$TMP_DIR" && -d "$TMP_DIR" ]]; then
+    rm -rf "$TMP_DIR"
+  fi
 }
 
 run_query() {
@@ -52,6 +58,7 @@ run_query() {
 
 require_bin docker
 require_bin sqlite3
+trap cleanup EXIT
 
 if [[ $# -lt 1 ]]; then
   usage

@@ -187,7 +187,6 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 		totalLocationDupSkipped int
 		totalCycleDupSkipped    int
 		totalRecentDupSkipped   int
-		totalSQLiteDupSkipped   int
 		companyNameCounts       = map[string]int{}
 		originNameCounts        = map[string]int{}
 		destNameCounts          = map[string]int{}
@@ -208,6 +207,8 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 		"enable_ui_feed":            enableUIFeed,
 		"sent_dedupe_ttl_minutes":   dedupeTTLMinutes,
 		"recent_sent_cache_entries": chrobRecentSentCache.Size(),
+		"dedupe_strategy":           "in_memory_loadnumber_or_fallback_hash",
+		"dedupe_persists_restart":   false,
 	}).Info("CHRob runner output/dedupe config")
 
 	// Dedup across *all* overlapping location searches within the current cycle.
@@ -317,7 +318,6 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 			totalShipments += len(searchResponse.Results)
 
 			var pageItems []chrobPageItem
-			var pageAuditRows []db.ChrobLoaderAudit
 			var locationPageUnique int
 			var zeroLoadNumber int
 			var locationDupSkipped int
@@ -349,7 +349,6 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 
 				if _, exists := locationSeenKeys[key]; exists {
 					locationDupSkipped++
-					pageAuditRows = append(pageAuditRows, newChrobLoaderAuditRow(pageNow, "skipped_location_duplicate", "duplicate within location/page stream", pageIndex, lat, lng, key, shipment, orderPayload))
 					continue
 				}
 				locationSeenKeys[key] = struct{}{}
@@ -357,14 +356,12 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 
 				if _, exists := cycleSeenKeys[key]; exists {
 					cycleDupSkipped++
-					pageAuditRows = append(pageAuditRows, newChrobLoaderAuditRow(pageNow, "skipped_cycle_duplicate", "duplicate across overlapping searches in same runner cycle", pageIndex, lat, lng, key, shipment, orderPayload))
 					continue
 				}
 				cycleSeenKeys[key] = struct{}{}
 
 				if (enableLoaderPost || enableUIFeed) && chrobRecentSentCache.SeenRecently(key, pageNow) {
 					recentDupSkipped++
-					pageAuditRows = append(pageAuditRows, newChrobLoaderAuditRow(pageNow, "skipped_recent_duplicate", "suppressed by in-memory recent sent cache", pageIndex, lat, lng, key, shipment, orderPayload))
 					continue
 				}
 
@@ -404,46 +401,6 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 				"totalCount_field":     searchResponse.TotalCount,
 			}).Info("CHRob page summary")
 
-			sqliteDupSkipped := 0
-			if enableLoaderPost && len(pageItems) > 0 {
-				keys := make([]string, 0, len(pageItems))
-				for _, item := range pageItems {
-					keys = append(keys, item.Key)
-				}
-
-				sentSince, err := db.ChrobSentKeysSince(keys, pageNow.Add(-dedupeTTL))
-				if err != nil {
-					log.WithError(err).WithFields(log.Fields{
-						"pageIndex": pageIndex,
-						"lat":       lat,
-						"lng":       lng,
-						"keys":      len(keys),
-					}).Error("CHRob SQLite dedupe lookup failed; continuing without persistent filter")
-				} else if len(sentSince) > 0 {
-					filtered := make([]chrobPageItem, 0, len(pageItems))
-					for _, item := range pageItems {
-						if _, exists := sentSince[item.Key]; exists {
-							sqliteDupSkipped++
-							chrobRecentSentCache.Mark(item.Key, pageNow)
-							pageAuditRows = append(pageAuditRows, newChrobLoaderAuditRowFromOrder(pageNow, "skipped_sqlite_duplicate", "suppressed by persistent SQLite dedupe window", pageIndex, lat, lng, item.Key, item.LoadNumber, item.Order))
-							continue
-						}
-						filtered = append(filtered, item)
-					}
-					pageItems = filtered
-				}
-			}
-			if sqliteDupSkipped > 0 {
-				totalSQLiteDupSkipped += sqliteDupSkipped
-				log.WithFields(log.Fields{
-					"lat":                lat,
-					"lng":                lng,
-					"pageIndex":          pageIndex,
-					"sqlite_dup_skipped": sqliteDupSkipped,
-					"queued_for_output":  len(pageItems),
-				}).Info("CHRob SQLite dedupe filtered page items")
-			}
-
 			// If the API ignores pageIndex or returns a repeated page, we can end up in an infinite loop.
 			// Break when this page contains no new *location-level* unique loads.
 			// (Using queued_for_output here would false-trigger on overlap/recent-cache duplicates.)
@@ -482,7 +439,6 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 				ok := 0
 				fail := 0
 				markedRecent := 0
-				var sentMarks []db.ChrobSentMark
 				for _, result := range results {
 					if result.Err != nil {
 						fail++
@@ -493,7 +449,6 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 							"lat":         lat,
 							"lng":         lng,
 						}).Error("Failed to post CHRob order to Loader API")
-						pageAuditRows = append(pageAuditRows, newChrobLoaderAuditRowFromOrder(pageNow, "posted_failure", result.Err.Error(), pageIndex, lat, lng, "", 0, result.Order))
 						continue
 					}
 					ok++
@@ -502,62 +457,20 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 						item := pageItems[result.Index]
 						chrobRecentSentCache.Mark(item.Key, pageNow)
 						markedRecent++
-						pageAuditRows = append(pageAuditRows, newChrobLoaderAuditRowFromOrder(pageNow, "posted_success", "", pageIndex, lat, lng, item.Key, item.LoadNumber, item.Order))
-						sentMarks = append(sentMarks, db.ChrobSentMark{
-							Key:         item.Key,
-							OrderNumber: item.Order.OrderNumber,
-							Source:      item.Order.Source,
-							LastSentAt:  pageNow,
-						})
 					}
-				}
-				if err := db.ChrobMarkSentBatch(sentMarks); err != nil {
-					log.WithError(err).WithFields(log.Fields{
-						"pageIndex": pageIndex,
-						"lat":       lat,
-						"lng":       lng,
-						"marks":     len(sentMarks),
-					}).Error("Failed to persist CHRob sent dedupe marks to SQLite")
-				}
-				if err := db.ChrobInsertLoaderAuditBatch(pageAuditRows); err != nil {
-					log.WithError(err).WithFields(log.Fields{
-						"pageIndex": pageIndex,
-						"lat":       lat,
-						"lng":       lng,
-						"rows":      len(pageAuditRows),
-					}).Error("Failed to persist CHRob loader audit rows")
 				}
 
 				log.WithFields(log.Fields{
-					"pageIndex":     pageIndex,
-					"pageOrders":    len(pageItems),
-					"posted_ok":     ok,
-					"posted_fail":   fail,
-					"recent_marked": markedRecent,
-					"sqlite_marked": len(sentMarks),
-					"location_lat":  lat,
-					"location_lng":  lng,
+					"pageIndex":         pageIndex,
+					"pageOrders":        len(pageItems),
+					"posted_ok":         ok,
+					"posted_fail":       fail,
+					"in_memory_marked":  markedRecent,
+					"location_lat":      lat,
+					"location_lng":      lng,
+					"dedupe_strategy":   "in_memory",
+					"dedupe_cache_size": chrobRecentSentCache.Size(),
 				}).Info("CHRob Loader post summary")
-			} else if !enableLoaderPost && len(pageItems) > 0 && enableUIFeed {
-				// In UI-only mode, mark recently seen keys after enqueue below so we still suppress
-				// duplicates across runner cycles without requiring LoaderAPI posts.
-				if err := db.ChrobInsertLoaderAuditBatch(pageAuditRows); err != nil {
-					log.WithError(err).WithFields(log.Fields{
-						"pageIndex": pageIndex,
-						"lat":       lat,
-						"lng":       lng,
-						"rows":      len(pageAuditRows),
-					}).Error("Failed to persist CHRob loader audit rows")
-				}
-			} else if len(pageAuditRows) > 0 {
-				if err := db.ChrobInsertLoaderAuditBatch(pageAuditRows); err != nil {
-					log.WithError(err).WithFields(log.Fields{
-						"pageIndex": pageIndex,
-						"lat":       lat,
-						"lng":       lng,
-						"rows":      len(pageAuditRows),
-					}).Error("Failed to persist CHRob loader audit rows")
-				}
 			}
 
 			// Also load the in-memory feed so the UI can page through results.
@@ -607,9 +520,9 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 		"location_dup_skipped":   totalLocationDupSkipped,
 		"cycle_dup_skipped":      totalCycleDupSkipped,
 		"recent_dup_skipped":     totalRecentDupSkipped,
-		"sqlite_dup_skipped":     totalSQLiteDupSkipped,
 		"cycle_unique_seen":      len(cycleSeenKeys),
 		"recent_sent_cache_size": chrobRecentSentCache.Size(),
+		"dedupe_strategy":        "in_memory_loadnumber_or_fallback_hash",
 		"contact_company_unique": len(companyNameCounts),
 		"origin_name_unique":     len(originNameCounts),
 		"dest_name_unique":       len(destNameCounts),
@@ -755,61 +668,6 @@ func mapShipmentToLoaderOrder(shipment chrobinson.ShipmentInfo) loader.LoaderOrd
 		Quantity:            0,
 		Stops:               stops,
 		TruckCompanyName:    companyName,
-	}
-}
-
-func newChrobLoaderAuditRow(
-	occurredAt time.Time,
-	action string,
-	reason string,
-	pageIndex int,
-	searchLat float64,
-	searchLng float64,
-	key string,
-	shipment chrobinson.ShipmentInfo,
-	order loader.LoaderOrder,
-) db.ChrobLoaderAudit {
-	return newChrobLoaderAuditRowFromOrder(
-		occurredAt,
-		action,
-		reason,
-		pageIndex,
-		searchLat,
-		searchLng,
-		key,
-		shipment.LoadNumber,
-		order,
-	)
-}
-
-func newChrobLoaderAuditRowFromOrder(
-	occurredAt time.Time,
-	action string,
-	reason string,
-	pageIndex int,
-	searchLat float64,
-	searchLng float64,
-	key string,
-	loadNumber int,
-	order loader.LoaderOrder,
-) db.ChrobLoaderAudit {
-	return db.ChrobLoaderAudit{
-		OccurredAt:       occurredAt.UTC(),
-		Action:           action,
-		Reason:           reason,
-		Source:           order.Source,
-		LoadNumber:       loadNumber,
-		OrderNumber:      order.OrderNumber,
-		DedupeKey:        key,
-		OriginCity:       order.PickupCity,
-		OriginState:      order.PickupState,
-		OriginZip:        order.PickupZip,
-		DestinationCity:  order.DeliveryCity,
-		DestinationState: order.DeliveryState,
-		DestinationZip:   order.DeliveryZip,
-		SearchLat:        searchLat,
-		SearchLng:        searchLng,
-		PageIndex:        pageIndex,
 	}
 }
 

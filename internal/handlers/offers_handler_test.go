@@ -7,13 +7,10 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"truckapi/db"
 	"truckapi/internal/auth"
 	"truckapi/internal/chrobinson"
 
 	"github.com/gofiber/fiber/v2"
-	"gorm.io/driver/sqlite"
-	"gorm.io/gorm"
 )
 
 func newTestCHRobAPIClient(t *testing.T, h http.HandlerFunc) (*chrobinson.APIClient, *httptest.Server) {
@@ -159,30 +156,12 @@ func TestSubmitLoadOfferHandler_IdempotencyReplay(t *testing.T) {
 	}
 }
 
-func setupOfferResponseDB(t *testing.T) *gorm.DB {
+func setupOfferResponseDB(t *testing.T) {
 	t.Helper()
-	oldDB := db.DB
-
-	gdb, err := gorm.Open(sqlite.Open("file:offer_response_test?mode=memory&cache=shared"), &gorm.Config{})
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	if err := gdb.AutoMigrate(&chrobinson.OfferResponse{}, &chrobinson.ShipmentDetailsRecord{}, &chrobinson.LoadBookingRecord{}); err != nil {
-		t.Fatalf("migrate sqlite: %v", err)
-	}
-	db.DB = gdb
-
-	t.Cleanup(func() {
-		db.DB = oldDB
-		sqlDB, _ := gdb.DB()
-		if sqlDB != nil {
-			_ = sqlDB.Close()
-		}
-	})
-	return gdb
+	resetRuntimeStoreForTests()
 }
 
-func TestBookLoadHandler_PersistsBookingRecord(t *testing.T) {
+func TestBookLoadHandler_TracksBookingRecordInMemory(t *testing.T) {
 	setupOfferResponseDB(t)
 	client, _ := newTestCHRobAPIClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/shipments/books" {
@@ -210,10 +189,11 @@ func TestBookLoadHandler_PersistsBookingRecord(t *testing.T) {
 		t.Fatalf("expected 202, got %d", resp.StatusCode)
 	}
 
-	var record chrobinson.LoadBookingRecord
-	if err := db.DB.Where("load_number = ?", 546698145).First(&record).Error; err != nil {
-		t.Fatalf("query record: %v", err)
+	records := runtimeStore.listBookings()
+	if len(records) != 1 {
+		t.Fatalf("expected 1 booking record, got %d", len(records))
 	}
+	record := records[0]
 	if record.Status != "accepted" {
 		t.Fatalf("expected status accepted, got %q", record.Status)
 	}
@@ -299,10 +279,11 @@ func TestOfferResponseHandler_StatusMapping(t *testing.T) {
 				t.Fatalf("expected 200, got %d", resp.StatusCode)
 			}
 
-			var record chrobinson.OfferResponse
-			if err := db.DB.Where("offer_request_id = ?", tc.offerRequestID).First(&record).Error; err != nil {
-				t.Fatalf("query record: %v", err)
+			offers := runtimeStore.listOffers()
+			if len(offers) == 0 {
+				t.Fatalf("expected at least 1 offer record")
 			}
+			record := offers[0]
 			if record.Status != tc.expected {
 				t.Fatalf("expected status=%q, got %q", tc.expected, record.Status)
 			}
@@ -352,10 +333,11 @@ func TestOfferResponseHandler_AcceptsStringNumbers(t *testing.T) {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 
-	var record chrobinson.OfferResponse
-	if err := db.DB.Where("offer_request_id = ?", "req-string-numbers").First(&record).Error; err != nil {
-		t.Fatalf("query record: %v", err)
+	offers := runtimeStore.listOffers()
+	if len(offers) == 0 {
+		t.Fatalf("expected at least 1 offer record")
 	}
+	record := offers[0]
 	if record.LoadNumber != 546698145 {
 		t.Fatalf("expected loadNumber=546698145, got %d", record.LoadNumber)
 	}
@@ -367,7 +349,7 @@ func TestOfferResponseHandler_AcceptsStringNumbers(t *testing.T) {
 	}
 }
 
-func TestShipmentDetailsHandler_PersistsCallback(t *testing.T) {
+func TestShipmentDetailsHandler_TracksCallbackInMemory(t *testing.T) {
 	setupOfferResponseDB(t)
 
 	app := fiber.New()
@@ -385,10 +367,11 @@ func TestShipmentDetailsHandler_PersistsCallback(t *testing.T) {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 
-	var record chrobinson.ShipmentDetailsRecord
-	if err := db.DB.Where("load_number = ?", "546698145").First(&record).Error; err != nil {
-		t.Fatalf("query record: %v", err)
+	records := runtimeStore.listShipmentDetails()
+	if len(records) != 1 {
+		t.Fatalf("expected 1 shipment detail record, got %d", len(records))
 	}
+	record := records[0]
 	if record.EventType != "LOAD DETAIL CHANGED" {
 		t.Fatalf("expected eventType to persist, got %q", record.EventType)
 	}

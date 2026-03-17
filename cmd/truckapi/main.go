@@ -76,15 +76,9 @@ func main() {
 	// Start the periodic milestone updater
 	// chrobinson.StartMilestoneUpdater(apiClient)
 
-	// Split local SQLite and platform MySQL initialization so offer tracking can use
-	// SQLite without forcing the platform DB connection in local/prototype runs.
+	// Platform MySQL is optional and independent from the in-memory CHRob runtime tracking.
 	enableDatabases := envTruthy(config.EnableDatabases, false)
-	enableSQLiteDB := envTruthy(config.EnableSQLiteDB, enableDatabases)
 	enablePlatformDB := envTruthy(config.EnablePlatformDB, enableDatabases)
-	if enableSQLiteDB {
-		db.InitializeDatabase()
-	}
-
 	if enablePlatformDB {
 		err = db.InitializePlatformDatabase()
 		if err != nil {

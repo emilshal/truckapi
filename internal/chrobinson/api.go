@@ -16,7 +16,6 @@ import (
 	"github.com/gofiber/fiber/v2"
 
 	log "github.com/sirupsen/logrus"
-	"gorm.io/gorm"
 )
 
 type APIClient struct {
@@ -532,24 +531,4 @@ func CreateSearchRequestsForTrucks(apiClient *APIClient, trucks []Truck, locatio
 	}
 
 	return allShipments, nil
-}
-func SaveLoadToDB(db *gorm.DB, shipment ShipmentInfo) error {
-	var existingShipment ShipmentInfo
-	if err := db.Where("load_number = ?", shipment.LoadNumber).First(&existingShipment).Error; err == nil {
-		// If a record is found, return without error, since we don't want duplicates.
-		log.WithField("loadNumber", shipment.LoadNumber).Info("Load already exists in database, skipping insert.")
-		return nil
-	} else if err != gorm.ErrRecordNotFound {
-		// If there's an error other than record not found, return it.
-		log.WithError(err).Error("Error checking for existing load in database")
-		return err
-	}
-
-	// Otherwise, insert the new shipment.
-	if err := db.Create(&shipment).Error; err != nil {
-		log.WithError(err).Error("Error saving load to database")
-		return err
-	}
-	log.WithField("loadNumber", shipment.LoadNumber).Info("Load saved successfully")
-	return nil
 }

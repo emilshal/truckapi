@@ -10,19 +10,13 @@ services:
       - "8081:8081"
     environment:
       SERVER_LISTEN_ADDR: ":8081"
-      TRUCKAPI_SQLITE_PATH: /var/lib/truckapi/truckapi.db
-      ENABLE_SQLITE_DB: "true"
       ENABLE_LOADER_POST: "true"
       ENABLE_UI_FEED: "false"
       LOADER_LOG_SUCCESS_BODY: "true"
     volumes:
-      - truckapi_data:/var/lib/truckapi
       - ./public:/app/public
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "3"
-
-volumes:
-  truckapi_data:

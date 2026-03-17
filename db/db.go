@@ -20,11 +20,9 @@ import (
 	"github.com/gofiber/websocket/v2"
 	log "github.com/sirupsen/logrus"
 	"gorm.io/driver/mysql"
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
 
-var DB *gorm.DB
 var PlatformDB *gorm.DB
 var processedTrucks map[int64]bool
 
@@ -35,29 +33,6 @@ func formatToDateOnly(dateTimeStr string) (string, error) {
 		return "", err
 	}
 	return parsedTime.UTC().Format("2006-01-02"), nil
-}
-
-// InitializeDatabase initializes the SQLite database connection and performs auto migration for the tables.
-func InitializeDatabase() {
-	var err error
-	dbPath := sqliteDBPath()
-	DB, err = gorm.Open(sqlite.Open(dbPath), &gorm.Config{})
-	if err != nil {
-		log.Fatalf("Error opening SQLite database: %v", err)
-	}
-	log.WithField("path", dbPath).Info("SQLite database connection established.")
-
-	err = DB.AutoMigrate(
-		&chrobinson.ShipmentInfo{},
-		&chrobinson.OfferResponse{},
-		&chrobinson.ShipmentDetailsRecord{},
-		&chrobinson.LoadBookingRecord{},
-		&ChrobLoaderAudit{},
-	)
-	if err != nil {
-		log.Fatalf("Error migrating SQLite database: %v", err)
-	}
-	log.Info("SQLite database migration completed. Tables created/updated successfully.")
 }
 
 // InitializePlatformDatabase initializes the MySQL database connection.

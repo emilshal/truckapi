@@ -14,7 +14,6 @@ import (
 	"github.com/joho/godotenv"
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/natefinch/lumberjack.v2"
-	"gorm.io/gorm"
 )
 
 // Constants for environment variable keys
@@ -34,7 +33,6 @@ const (
 	APIKey                   = "API_KEY"
 	OpenAIAPIKey             = "OPENAI_API_KEY"
 	EnableDatabases          = "ENABLE_DATABASES"
-	EnableSQLiteDB           = "ENABLE_SQLITE_DB"
 	EnablePlatformDB         = "ENABLE_PLATFORM_DB"
 	BidIdempotencyTTLMinutes = "BID_IDEMPOTENCY_TTL_MINUTES"
 	// 🔧 Truckstop config
@@ -51,7 +49,6 @@ const (
 
 var (
 	Env              map[string]string
-	DB               *gorm.DB
 	DefaultEnvValues = map[string]string{
 		"CHROB_CLIENT_ID":        "0oas6jwy40YOo5T4g357",
 		"CHROB_CLIENT_SECRET":    "_a67bEwQ-gTeS5FP0TnYn2iJXe1xefNnn3RSw7Wz",
@@ -68,7 +65,6 @@ var (
 		"API_KEY":                "",
 		"OPENAI_API_KEY":         "",
 		EnableDatabases:          "false",
-		EnableSQLiteDB:           "",
 		EnablePlatformDB:         "",
 		BidIdempotencyTTLMinutes: "60",
 		LoaderAPIBaseURL:         "https://core.hfield.net",
@@ -94,7 +90,6 @@ var (
 		"API_KEY",
 		"OPENAI_API_KEY",
 		EnableDatabases,
-		EnableSQLiteDB,
 		EnablePlatformDB,
 		BidIdempotencyTTLMinutes,
 		TruckstopUsername,

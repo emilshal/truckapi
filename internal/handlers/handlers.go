@@ -92,18 +92,6 @@ func SearchAvailableShipmentsHandler(apiClient *chrobinson.APIClient) fiber.Hand
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 		}
 
-		// Save the shipment data to the database
-		// Prototype: skip persisting loads unless explicitly enabled.
-		// Set `SAVE_SHIPMENTS_TO_DB=true` to restore the old behavior.
-		if v := strings.ToLower(strings.TrimSpace(config.GetEnv("SAVE_SHIPMENTS_TO_DB", "false"))); v == "1" || v == "true" || v == "yes" {
-			for _, shipment := range searchResponse.Results {
-				if saveErr := chrobinson.SaveLoadToDB(db.DB, shipment); saveErr != nil {
-					log.WithError(saveErr).Error("Failed to save shipment to DB")
-					return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": saveErr.Error()})
-				}
-			}
-		}
-
 		// Commented out logic for sending the search response to an external endpoint
 		/*
 			// Prepare the request payload
@@ -226,30 +214,20 @@ func BookLoadHandler(apiClient *chrobinson.APIClient) fiber.Handler {
 			})
 		}
 
-		persisted := false
-		if db.DB == nil {
-			log.Error("SQLite database is not initialized for booking persistence")
+		loadCostsJSON, marshalErr := json.Marshal(bookingRequest.AvailableLoadCosts)
+		if marshalErr != nil {
+			log.WithError(marshalErr).Error("Failed to marshal availableLoadCosts for in-memory booking tracking")
 		} else {
-			loadCostsJSON, marshalErr := json.Marshal(bookingRequest.AvailableLoadCosts)
-			if marshalErr != nil {
-				log.WithError(marshalErr).Error("Failed to marshal availableLoadCosts for booking persistence")
-			} else {
-				record := chrobinson.LoadBookingRecord{
-					LoadNumber:            bookingRequest.LoadNumber,
-					CarrierCode:           bookingRequest.CarrierCode,
-					Status:                "accepted",
-					EmptyDateTime:         bookingRequest.EmptyDateTime,
-					RateConfirmationName:  bookingRequest.RateConfirmation.Name,
-					RateConfirmationEmail: bookingRequest.RateConfirmation.Email,
-					AvailableLoadCosts:    string(loadCostsJSON),
-					RawRequest:            string(rawRequest),
-				}
-				if err := db.DB.Create(&record).Error; err != nil {
-					log.WithError(err).Error("Failed to persist booking record")
-				} else {
-					persisted = true
-				}
-			}
+			runtimeStore.addBooking(chrobinson.LoadBookingRecord{
+				LoadNumber:            bookingRequest.LoadNumber,
+				CarrierCode:           bookingRequest.CarrierCode,
+				Status:                "accepted",
+				EmptyDateTime:         bookingRequest.EmptyDateTime,
+				RateConfirmationName:  bookingRequest.RateConfirmation.Name,
+				RateConfirmationEmail: bookingRequest.RateConfirmation.Email,
+				AvailableLoadCosts:    string(loadCostsJSON),
+				RawRequest:            string(rawRequest),
+			})
 		}
 
 		// If everything was successful, return an appropriate response
@@ -258,8 +236,9 @@ func BookLoadHandler(apiClient *chrobinson.APIClient) fiber.Handler {
 			"loadNumber":              bookingRequest.LoadNumber,
 			"carrierCode":             bookingRequest.CarrierCode,
 			"status":                  "accepted",
-			"persisted":               persisted,
+			"persisted":               false,
 			"awaitingShipmentDetails": true,
+			"trackingMode":            "memory",
 		})
 	}
 }
@@ -277,13 +256,9 @@ func OfferLoadHandler(c *fiber.Ctx) error {
 	offer.Status = "pending"
 	offer.RejectReasonsStr = chrobinson.ConvertRejectReasonsToString([]string{}) // Initialize with empty JSON array
 
-	// Save the offer to the database
-	if err := db.DB.Create(&offer).Error; err != nil {
-		log.WithError(err).Error("Failed to save offer load to the database")
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to save offer load to the database",
-		})
-	}
+	offer.CreatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	offer.UpdatedAt = offer.CreatedAt
+	offer = runtimeStore.upsertOffer(offer)
 
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{
 		"message": "Offer load saved successfully",
@@ -293,14 +268,7 @@ func OfferLoadHandler(c *fiber.Ctx) error {
 
 // FetchAllOffersHandler handles fetching all offer responses.
 func FetchAllOffersHandler(c *fiber.Ctx) error {
-	var offers []chrobinson.OfferResponse
-
-	if err := db.DB.Order("id desc").Find(&offers).Error; err != nil {
-		log.Println("Failed to fetch offers from the database:", err)
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to fetch offers from the database",
-		})
-	}
+	offers := runtimeStore.listOffers()
 
 	// Convert RejectReasons field to slice of strings
 	for i := range offers {
@@ -318,14 +286,7 @@ func FetchAllOffersHandler(c *fiber.Ctx) error {
 }
 
 func FetchAllShipmentDetailsHandler(c *fiber.Ctx) error {
-	var records []chrobinson.ShipmentDetailsRecord
-
-	if err := db.DB.Order("id desc").Find(&records).Error; err != nil {
-		log.WithError(err).Error("Failed to fetch shipment detail callbacks from the database")
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to fetch shipment detail callbacks from the database",
-		})
-	}
+	records := runtimeStore.listShipmentDetails()
 
 	return c.JSON(fiber.Map{
 		"shipmentDetails": records,
@@ -333,14 +294,7 @@ func FetchAllShipmentDetailsHandler(c *fiber.Ctx) error {
 }
 
 func FetchAllBookingsHandler(c *fiber.Ctx) error {
-	var records []chrobinson.LoadBookingRecord
-
-	if err := db.DB.Order("id desc").Find(&records).Error; err != nil {
-		log.WithError(err).Error("Failed to fetch booking records from the database")
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to fetch booking records from the database",
-		})
-	}
+	records := runtimeStore.listBookings()
 
 	return c.JSON(fiber.Map{
 		"bookings": records,
@@ -375,12 +329,6 @@ func OfferResponseHandler(c *fiber.Ctx) error {
 			"error": "offerRequestId is required",
 		})
 	}
-	if db.DB == nil {
-		logrus.Error("SQLite database is not initialized for offer response callback")
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Database is not initialized",
-		})
-	}
 
 	// Determine the new status based on the offer result
 	newStatus := offerResponse.OfferResult
@@ -393,27 +341,22 @@ func OfferResponseHandler(c *fiber.Ctx) error {
 	}
 
 	rejectReasonsJSON := chrobinson.ConvertRejectReasonsToString(offerResponse.RejectReasons)
-	record := chrobinson.OfferResponse{OfferRequestId: offerResponse.OfferRequestId}
-	if err := db.DB.
-		Where(chrobinson.OfferResponse{OfferRequestId: offerResponse.OfferRequestId}).
-		Assign(map[string]interface{}{
-			"load_number":      offerResponse.LoadNumber.Int(),
-			"carrier_code":     offerResponse.CarrierCode,
-			"offer_id":         offerResponse.OfferId.Int(),
-			"offer_result":     offerResponse.OfferResult,
-			"price":            offerResponse.Price.Int(),
-			"currency_code":    offerResponse.CurrencyCode,
-			"reject_reasons":   rejectReasonsJSON,
-			"status":           newStatus,
-			"raw_payload":      string(rawBody),
-			"offer_request_id": offerResponse.OfferRequestId,
-		}).
-		FirstOrCreate(&record).Error; err != nil {
-		logrus.WithError(err).Error("Failed to update offer status in the database")
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to update offer status in the database",
-		})
-	}
+	nowRFC3339 := time.Now().UTC().Format(time.RFC3339Nano)
+	runtimeStore.upsertOffer(chrobinson.OfferResponse{
+		LoadNumber:       offerResponse.LoadNumber.Int(),
+		CarrierCode:      offerResponse.CarrierCode,
+		OfferRequestId:   offerResponse.OfferRequestId,
+		OfferId:          offerResponse.OfferId.Int(),
+		OfferResult:      offerResponse.OfferResult,
+		Price:            offerResponse.Price.Int(),
+		CurrencyCode:     offerResponse.CurrencyCode,
+		RejectReasons:    offerResponse.RejectReasons,
+		RejectReasonsStr: rejectReasonsJSON,
+		Status:           newStatus,
+		RawPayload:       string(rawBody),
+		CreatedAt:        nowRFC3339,
+		UpdatedAt:        nowRFC3339,
+	})
 
 	c.Set(fiber.HeaderContentType, "text/plain; charset=utf-8")
 	return c.Status(fiber.StatusOK).SendString("ok")
@@ -440,14 +383,7 @@ func ShipmentDetailsHandler(c *fiber.Ctx) error {
 		"mode":         shipmentDetails.Event.Mode,
 	}).Info("Received shipment details callback")
 
-	if db.DB == nil {
-		log.Error("SQLite database is not initialized for shipment details callback")
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Database is not initialized",
-		})
-	}
-
-	record := chrobinson.ShipmentDetailsRecord{
+	runtimeStore.addShipmentDetails(chrobinson.ShipmentDetailsRecord{
 		LoadNumber:   shipmentDetails.LoadNumber.String(),
 		CarrierCode:  shipmentDetails.CarrierCode,
 		Scac:         shipmentDetails.Scac,
@@ -459,13 +395,7 @@ func ShipmentDetailsHandler(c *fiber.Ctx) error {
 		Mode:         shipmentDetails.Event.Mode,
 		ActivityDate: shipmentDetails.Event.ActivityDate,
 		RawPayload:   string(rawBody),
-	}
-	if err := db.DB.Create(&record).Error; err != nil {
-		log.WithError(err).Error("Failed to persist shipment details callback")
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to persist shipment details callback",
-		})
-	}
+	})
 
 	c.Set(fiber.HeaderContentType, "text/plain; charset=utf-8")
 	return c.Status(fiber.StatusOK).SendString("ok")
@@ -548,6 +478,7 @@ func SubmitLoadOfferHandler(apiClient *chrobinson.APIClient) fiber.Handler {
 
 		persisted := false
 		persistWarning := ""
+		nowRFC3339 := time.Now().UTC().Format(time.RFC3339Nano)
 		if submitResponse.OfferRequestId == "" {
 			persistWarning = "CHRob accepted the offer but did not return an offerRequestId; local tracking skipped"
 			log.WithFields(log.Fields{
@@ -556,28 +487,20 @@ func SubmitLoadOfferHandler(apiClient *chrobinson.APIClient) fiber.Handler {
 				"offerPrice":   offerRequest.OfferPrice,
 				"currencyCode": offerRequest.CurrencyCode,
 			}).Warn("Load offer accepted without offerRequestId")
-		} else if db.DB == nil {
-			persistWarning = "CHRob accepted the offer but local database is not initialized; tracking skipped"
-			log.WithField("offerRequestId", submitResponse.OfferRequestId).Error("SQLite database is not initialized for load offer persistence")
 		} else {
-			record := chrobinson.OfferResponse{OfferRequestId: submitResponse.OfferRequestId}
-			if err := db.DB.
-				Where(chrobinson.OfferResponse{OfferRequestId: submitResponse.OfferRequestId}).
-				Assign(map[string]interface{}{
-					"load_number":      parsedLoadNumber,
-					"carrier_code":     offerRequest.CarrierCode,
-					"price":            offerRequest.OfferPrice,
-					"currency_code":    offerRequest.CurrencyCode,
-					"status":           "pending",
-					"reject_reasons":   chrobinson.ConvertRejectReasonsToString([]string{}),
-					"offer_request_id": submitResponse.OfferRequestId,
-				}).
-				FirstOrCreate(&record).Error; err != nil {
-				persistWarning = "Offer was sent to CHRob but failed to save locally"
-				log.WithError(err).WithField("offerRequestId", submitResponse.OfferRequestId).Error("Failed to persist submitted load offer")
-			} else {
-				persisted = true
-			}
+			runtimeStore.upsertOffer(chrobinson.OfferResponse{
+				LoadNumber:       parsedLoadNumber,
+				CarrierCode:      offerRequest.CarrierCode,
+				OfferRequestId:   submitResponse.OfferRequestId,
+				Price:            offerRequest.OfferPrice,
+				CurrencyCode:     offerRequest.CurrencyCode,
+				RejectReasons:    []string{},
+				RejectReasonsStr: chrobinson.ConvertRejectReasonsToString([]string{}),
+				Status:           "pending",
+				CreatedAt:        nowRFC3339,
+				UpdatedAt:        nowRFC3339,
+			})
+			persistWarning = "Offer is tracked in memory only and will reset on restart"
 		}
 
 		log.WithFields(log.Fields{
