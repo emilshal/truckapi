@@ -93,6 +93,14 @@ func NewAPIClientFromEnv(httpClient *http.Client) *APIClient {
 	)
 }
 
+func NewCoreAPIClientFromEnv(httpClient *http.Client) *APIClient {
+	return NewAPIClient(
+		config.GetEnv(config.LoaderAPIBaseURL, "https://core.hfield.net"),
+		config.GetEnv(config.LoaderAPIKey, ""),
+		httpClient,
+	)
+}
+
 func (client *APIClient) CreateOrder(order LoaderOrder) error {
 	if client == nil {
 		return fmt.Errorf("loader client is nil")
@@ -151,6 +159,60 @@ func (client *APIClient) CreateOrder(order LoaderOrder) error {
 		"status_code":  resp.StatusCode,
 		"loaderApiUrl": url,
 	}).Debug("✅ Posted order to Loader API")
+
+	return nil
+}
+
+func (client *APIClient) CreateBrokerResponse(response BrokerResponse) error {
+	if client == nil {
+		return fmt.Errorf("loader client is nil")
+	}
+	if client.BaseURL == "" {
+		return fmt.Errorf("loader base url is empty")
+	}
+	if strings.TrimSpace(client.APIKey) == "" {
+		return fmt.Errorf("loader api key is empty")
+	}
+	if response.OrderBidID <= 0 {
+		return fmt.Errorf("order_bid_id must be greater than 0")
+	}
+	if strings.TrimSpace(response.OfferResult) == "" {
+		return fmt.Errorf("offerResult is required")
+	}
+
+	payload, err := json.Marshal(response)
+	if err != nil {
+		return fmt.Errorf("marshal loader broker response: %w", err)
+	}
+
+	url := client.BaseURL + "/api/v1/loader/order-bids/broker-response"
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("build loader broker response request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-KEY", client.APIKey)
+
+	resp, err := client.HTTPClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("loader broker response request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusAccepted {
+		return &APIError{StatusCode: resp.StatusCode, Body: string(body)}
+	}
+	if loader2xxBodyExplicitFailure(body) {
+		return &APIError{StatusCode: resp.StatusCode, Body: string(body)}
+	}
+
+	log.WithFields(log.Fields{
+		"order_bid_id": response.OrderBidID,
+		"offer_result": response.OfferResult,
+		"status_code":  resp.StatusCode,
+		"loaderApiUrl": url,
+	}).Info("Forwarded broker response to Loader API")
 
 	return nil
 }

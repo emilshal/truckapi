@@ -61,7 +61,7 @@ var (
 		"CHROB_CARRIER_CODE":     "T6263835",
 		CHRobEnv:                 "",
 		CHRobCallbackBearerToken: "",
-		CHRobCallbackAllowAPIKey: "true",
+		CHRobCallbackAllowAPIKey: "false",
 		"API_KEY":                "",
 		"OPENAI_API_KEY":         "",
 		EnableDatabases:          "false",

@@ -2,20 +2,30 @@ package handlers
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 	"truckapi/internal/auth"
 	"truckapi/internal/chrobinson"
+	"truckapi/internal/loader"
 
 	"github.com/gofiber/fiber/v2"
 )
 
+func testJWT(exp time.Time) string {
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`))
+	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"exp":` + strconv.FormatInt(exp.Unix(), 10) + `}`))
+	return header + "." + payload + ".sig"
+}
+
 func newTestCHRobAPIClient(t *testing.T, h http.HandlerFunc) (*chrobinson.APIClient, *httptest.Server) {
 	t.Helper()
-	t.Setenv("CHROB_ACCESS_TOKEN", "test-token")
+	t.Setenv("CHROB_ACCESS_TOKEN", testJWT(time.Now().Add(1*time.Hour)))
 
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
@@ -156,9 +166,42 @@ func TestSubmitLoadOfferHandler_IdempotencyReplay(t *testing.T) {
 	}
 }
 
+func TestSubmitLoadOfferHandler_StoresOrderBidID(t *testing.T) {
+	setupOfferResponseDB(t)
+	resetOfferSubmitIdempotencyForTests()
+
+	client, _ := newTestCHRobAPIClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"offerRequestId":"offer-req-bid"}`))
+	})
+
+	app := newOfferTestApp(client)
+	req := httptest.NewRequest(http.MethodPost, "/v1/shipments/123/offers",
+		bytes.NewBufferString(`{"carrierCode":"T100","offerPrice":500,"order_bid_id":11852585}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := app.Test(req, 5000)
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusAccepted {
+		t.Fatalf("expected 202, got %d", resp.StatusCode)
+	}
+
+	offers := runtimeStore.listOffers()
+	if len(offers) != 1 {
+		t.Fatalf("expected 1 offer record, got %d", len(offers))
+	}
+	if offers[0].OrderBidID != 11852585 {
+		t.Fatalf("expected orderBidId=11852585, got %d", offers[0].OrderBidID)
+	}
+}
+
 func setupOfferResponseDB(t *testing.T) {
 	t.Helper()
 	resetRuntimeStoreForTests()
+	chrobinson.ResetRuntimeAvailableLoadCostsForTests()
 }
 
 func TestBookLoadHandler_TracksBookingRecordInMemory(t *testing.T) {
@@ -349,6 +392,75 @@ func TestOfferResponseHandler_AcceptsStringNumbers(t *testing.T) {
 	}
 }
 
+func TestOfferResponseHandler_ForwardsBrokerResponseToLoaderAPI(t *testing.T) {
+	setupOfferResponseDB(t)
+
+	var received loader.BrokerResponse
+	loaderSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/loader/order-bids/broker-response" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if r.Header.Get("X-API-KEY") != "test-loader-key" {
+			t.Fatalf("unexpected X-API-KEY: %q", r.Header.Get("X-API-KEY"))
+		}
+		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+			t.Fatalf("decode broker response: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer loaderSrv.Close()
+
+	t.Setenv("LOADER_API_BASE_URL", loaderSrv.URL)
+	t.Setenv("LOADER_API_KEY", "test-loader-key")
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	runtimeStore.upsertOffer(chrobinson.OfferResponse{
+		LoadNumber:     1,
+		CarrierCode:    "T100",
+		OfferRequestId: "req-counter",
+		OrderBidID:     11852585,
+		Status:         "pending",
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	})
+
+	app := newOfferTestApp(nil)
+	req := httptest.NewRequest(http.MethodPost, "/offerResponse/callback/here",
+		bytes.NewBufferString(`{"loadNumber":1,"carrierCode":"T100","offerRequestId":"req-counter","offerId":12,"offerResult":"Counter","price":900,"currencyCode":"USD","rejectReasons":[]}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := app.Test(req, 5000)
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	if received.OrderBidID != 11852585 {
+		t.Fatalf("expected order_bid_id=11852585, got %d", received.OrderBidID)
+	}
+	if received.OfferResult != "Counter" {
+		t.Fatalf("expected offerResult=Counter, got %q", received.OfferResult)
+	}
+	if received.Price != 900 {
+		t.Fatalf("expected price=900, got %d", received.Price)
+	}
+
+	offers := runtimeStore.listOffers()
+	if len(offers) == 0 {
+		t.Fatalf("expected stored offer record")
+	}
+	if offers[0].BrokerResponseAt == "" {
+		t.Fatalf("expected brokerResponseAt to be set")
+	}
+	if offers[0].BrokerResponseError != "" {
+		t.Fatalf("expected empty brokerResponseError, got %q", offers[0].BrokerResponseError)
+	}
+}
+
 func TestShipmentDetailsHandler_TracksCallbackInMemory(t *testing.T) {
 	setupOfferResponseDB(t)
 
@@ -380,5 +492,79 @@ func TestShipmentDetailsHandler_TracksCallbackInMemory(t *testing.T) {
 	}
 	if !strings.Contains(record.RawPayload, `"loadNumber":"546698145"`) {
 		t.Fatalf("expected raw payload to be stored, got %q", record.RawPayload)
+	}
+}
+
+func TestBookLoadHandler_UsesCachedAvailableLoadCosts(t *testing.T) {
+	setupOfferResponseDB(t)
+
+	var upstreamRequest chrobinson.LoadBookingRequest
+	client, _ := newTestCHRobAPIClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/shipments/books" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&upstreamRequest); err != nil {
+			t.Fatalf("decode booking request: %v", err)
+		}
+		w.WriteHeader(http.StatusAccepted)
+	})
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	runtimeStore.upsertOffer(chrobinson.OfferResponse{
+		LoadNumber:     546698145,
+		CarrierCode:    "T6263835",
+		OfferRequestId: "req-book",
+		OfferResult:    "Counter",
+		Price:          900,
+		CurrencyCode:   "USD",
+		Status:         "countered",
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	})
+	chrobinson.CacheAvailableLoadCosts(546698145, []chrobinson.AvailableLoadCost{{
+		LoadNumber:        546698145,
+		CarrierCode:       "T6263835",
+		Type:              "Flat",
+		Code:              "400",
+		Description:       "Line Haul",
+		SourceCostPerUnit: 900,
+		Units:             1,
+		CurrencyCode:      "USD",
+		BinCostKey:        "bin-1",
+	}})
+
+	app := newOfferTestApp(client)
+	req := httptest.NewRequest(http.MethodPost, "/v1/shipments/books", bytes.NewBufferString(`{"loadNumber":546698145}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := app.Test(req, 5000)
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusAccepted {
+		t.Fatalf("expected 202, got %d", resp.StatusCode)
+	}
+
+	if upstreamRequest.LoadNumber != 546698145 {
+		t.Fatalf("expected loadNumber=546698145, got %d", upstreamRequest.LoadNumber)
+	}
+	if upstreamRequest.CarrierCode != "T6263835" {
+		t.Fatalf("expected carrierCode=T6263835, got %q", upstreamRequest.CarrierCode)
+	}
+	if len(upstreamRequest.AvailableLoadCosts) != 1 {
+		t.Fatalf("expected 1 cached load cost, got %d", len(upstreamRequest.AvailableLoadCosts))
+	}
+	cost := upstreamRequest.AvailableLoadCosts[0]
+	if cost.Type != "Flat" || cost.Code != "400" || cost.Description != "Line Haul" {
+		t.Fatalf("unexpected cached cost metadata: %+v", cost)
+	}
+	if cost.SourceCostPerUnit != 900 {
+		t.Fatalf("expected cached price=900, got %v", cost.SourceCostPerUnit)
+	}
+	if cost.Units != 1 {
+		t.Fatalf("expected cached units=1, got %d", cost.Units)
+	}
+	if cost.CurrencyCode != "USD" {
+		t.Fatalf("expected cached currencyCode=USD, got %q", cost.CurrencyCode)
 	}
 }

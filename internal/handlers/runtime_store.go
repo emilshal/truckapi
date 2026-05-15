@@ -79,6 +79,30 @@ func (s *runtimeTrackingStore) listOffers() []chrobinson.OfferResponse {
 	return out
 }
 
+func (s *runtimeTrackingStore) offerByRequestID(offerRequestID string) (chrobinson.OfferResponse, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for _, offer := range s.offers {
+		if offer.OfferRequestId == offerRequestID {
+			return offer, true
+		}
+	}
+	return chrobinson.OfferResponse{}, false
+}
+
+func (s *runtimeTrackingStore) latestOfferByLoadNumber(loadNumber int) (chrobinson.OfferResponse, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for _, offer := range s.offers {
+		if offer.LoadNumber == loadNumber {
+			return offer, true
+		}
+	}
+	return chrobinson.OfferResponse{}, false
+}
+
 func (s *runtimeTrackingStore) addBooking(record chrobinson.LoadBookingRecord) chrobinson.LoadBookingRecord {
 	s.mu.Lock()
 	defer s.mu.Unlock()

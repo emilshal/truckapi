@@ -2,11 +2,13 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
 	"truckapi/db"
 	"truckapi/internal/chrobinson"
+	"truckapi/internal/loader"
 	"truckapi/pkg/config"
 
 	"github.com/gofiber/fiber/v2"
@@ -81,6 +83,11 @@ func SearchAvailableShipmentsHandler(apiClient *chrobinson.APIClient) fiber.Hand
 			}
 			// Assign the response to the searchResponse variable.
 			searchResponse = response
+			for _, shipment := range searchResponse.Results {
+				if shipment.LoadNumber > 0 && len(shipment.AvailableLoadCosts) > 0 {
+					chrobinson.CacheAvailableLoadCosts(shipment.LoadNumber, shipment.AvailableLoadCosts)
+				}
+			}
 			// Before sending the response
 			log.Infof("Sending search response: %+v", searchResponse)
 			return nil
@@ -176,9 +183,19 @@ func BookLoadHandler(apiClient *chrobinson.APIClient) fiber.Handler {
 		if bookingRequest.CarrierCode == "" {
 			bookingRequest.CarrierCode = config.GetEnv(config.CHRobCarrierCode, "")
 		}
-		if bookingRequest.LoadNumber == 0 || bookingRequest.CarrierCode == "" {
+		if bookingRequest.LoadNumber == 0 {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-				"error": "loadNumber and carrierCode are required",
+				"error": "loadNumber is required",
+			})
+		}
+		if err := populateBookingRequestFromOffer(&bookingRequest); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": err.Error(),
+			})
+		}
+		if bookingRequest.CarrierCode == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": "carrierCode is required",
 			})
 		}
 		if len(bookingRequest.AvailableLoadCosts) == 0 {
@@ -342,21 +359,64 @@ func OfferResponseHandler(c *fiber.Ctx) error {
 
 	rejectReasonsJSON := chrobinson.ConvertRejectReasonsToString(offerResponse.RejectReasons)
 	nowRFC3339 := time.Now().UTC().Format(time.RFC3339Nano)
-	runtimeStore.upsertOffer(chrobinson.OfferResponse{
-		LoadNumber:       offerResponse.LoadNumber.Int(),
-		CarrierCode:      offerResponse.CarrierCode,
-		OfferRequestId:   offerResponse.OfferRequestId,
-		OfferId:          offerResponse.OfferId.Int(),
-		OfferResult:      offerResponse.OfferResult,
-		Price:            offerResponse.Price.Int(),
-		CurrencyCode:     offerResponse.CurrencyCode,
-		RejectReasons:    offerResponse.RejectReasons,
-		RejectReasonsStr: rejectReasonsJSON,
-		Status:           newStatus,
-		RawPayload:       string(rawBody),
-		CreatedAt:        nowRFC3339,
-		UpdatedAt:        nowRFC3339,
-	})
+	record, found := runtimeStore.offerByRequestID(offerResponse.OfferRequestId)
+	if !found {
+		record = chrobinson.OfferResponse{
+			CreatedAt: nowRFC3339,
+		}
+	}
+	record.LoadNumber = offerResponse.LoadNumber.Int()
+	record.CarrierCode = offerResponse.CarrierCode
+	record.OfferRequestId = offerResponse.OfferRequestId
+	record.OfferId = offerResponse.OfferId.Int()
+	record.OfferResult = offerResponse.OfferResult
+	record.Price = offerResponse.Price.Int()
+	record.CurrencyCode = offerResponse.CurrencyCode
+	record.RejectReasons = offerResponse.RejectReasons
+	record.RejectReasonsStr = rejectReasonsJSON
+	record.Status = newStatus
+	record.RawPayload = string(rawBody)
+	record.UpdatedAt = nowRFC3339
+	record = runtimeStore.upsertOffer(record)
+
+	if record.OrderBidID > 0 {
+		if record.BrokerResponseAt != "" {
+			logrus.WithFields(logrus.Fields{
+				"offerRequestId":   offerResponse.OfferRequestId,
+				"orderBidId":       record.OrderBidID,
+				"brokerResponseAt": record.BrokerResponseAt,
+			}).Info("Broker response already forwarded to Loader API")
+		} else {
+			loaderClient := loader.NewCoreAPIClientFromEnv(nil)
+			forwardErr := loaderClient.CreateBrokerResponse(loader.BrokerResponse{
+				OrderBidID:  record.OrderBidID,
+				OfferResult: offerResponse.OfferResult,
+				Price:       offerResponse.Price.Int(),
+			})
+			if forwardErr != nil {
+				record.BrokerResponseError = forwardErr.Error()
+				record.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+				runtimeStore.upsertOffer(record)
+				logrus.WithError(forwardErr).WithFields(logrus.Fields{
+					"offerRequestId": offerResponse.OfferRequestId,
+					"orderBidId":     record.OrderBidID,
+					"offerResult":    offerResponse.OfferResult,
+					"price":          offerResponse.Price.Int(),
+				}).Error("Failed to forward broker response to Loader API")
+				return c.Status(fiber.StatusBadGateway).SendString("failed to forward broker response")
+			}
+
+			record.BrokerResponseAt = time.Now().UTC().Format(time.RFC3339Nano)
+			record.BrokerResponseError = ""
+			record.UpdatedAt = record.BrokerResponseAt
+			runtimeStore.upsertOffer(record)
+		}
+	} else {
+		logrus.WithFields(logrus.Fields{
+			"offerRequestId": offerResponse.OfferRequestId,
+			"loadNumber":     offerResponse.LoadNumber.Int(),
+		}).Warn("Offer response received without stored order_bid_id; Loader broker response not forwarded")
+	}
 
 	c.Set(fiber.HeaderContentType, "text/plain; charset=utf-8")
 	return c.Status(fiber.StatusOK).SendString("ok")
@@ -411,7 +471,7 @@ func SubmitLoadOfferHandler(apiClient *chrobinson.APIClient) fiber.Handler {
 				"error": "loadNumber must be an integer",
 			})
 		}
-		offerRequest, err := validateAndBuildOfferRequest(c.Body())
+		parsedInput, err := validateAndBuildOfferRequest(c.Body())
 		if err != nil {
 			log.WithError(err).Error("Failed to parse offer request body")
 			if fe, ok := err.(*fiber.Error); ok {
@@ -419,6 +479,7 @@ func SubmitLoadOfferHandler(apiClient *chrobinson.APIClient) fiber.Handler {
 			}
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid request data"})
 		}
+		offerRequest := parsedInput.Request
 
 		if offerRequest.CarrierCode == "" {
 			offerRequest.CarrierCode = config.GetEnv(config.CHRobCarrierCode, "")
@@ -492,6 +553,7 @@ func SubmitLoadOfferHandler(apiClient *chrobinson.APIClient) fiber.Handler {
 				LoadNumber:       parsedLoadNumber,
 				CarrierCode:      offerRequest.CarrierCode,
 				OfferRequestId:   submitResponse.OfferRequestId,
+				OrderBidID:       parsedInput.OrderBidID,
 				Price:            offerRequest.OfferPrice,
 				CurrencyCode:     offerRequest.CurrencyCode,
 				RejectReasons:    []string{},
@@ -540,9 +602,21 @@ func MarkBookedHandler(apiClient *chrobinson.APIClient) fiber.Handler {
 		if bookingRequest.CarrierCode == "" {
 			bookingRequest.CarrierCode = config.GetEnv(config.CHRobCarrierCode, "")
 		}
-		if bookingRequest.LoadNumber == 0 || bookingRequest.CarrierCode == "" {
+		if bookingRequest.LoadNumber == 0 {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-				"error": "loadNumber and carrierCode are required",
+				"error": "loadNumber is required",
+			})
+		}
+		if len(bookingRequest.AvailableLoadCosts) == 0 {
+			if err := populateBookingRequestFromOffer(&bookingRequest); err != nil {
+				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+					"error": err.Error(),
+				})
+			}
+		}
+		if bookingRequest.CarrierCode == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": "carrierCode is required",
 			})
 		}
 		if len(bookingRequest.AvailableLoadCosts) == 0 {
@@ -565,6 +639,42 @@ func MarkBookedHandler(apiClient *chrobinson.APIClient) fiber.Handler {
 			"message": "Load marked as booked",
 		})
 	}
+}
+
+func populateBookingRequestFromOffer(bookingRequest *chrobinson.LoadBookingRequest) error {
+	if bookingRequest == nil || bookingRequest.LoadNumber == 0 {
+		return nil
+	}
+	if len(bookingRequest.AvailableLoadCosts) > 0 {
+		return nil
+	}
+
+	offer, ok := runtimeStore.latestOfferByLoadNumber(bookingRequest.LoadNumber)
+	if !ok {
+		return fmt.Errorf("availableLoadCosts must include at least one item")
+	}
+	if bookingRequest.CarrierCode == "" && offer.CarrierCode != "" {
+		bookingRequest.CarrierCode = offer.CarrierCode
+	}
+	if offer.Status != "booked" && offer.Status != "countered" {
+		return fmt.Errorf("cannot derive booking cost for loadNumber %d without an accepted or countered offer response", bookingRequest.LoadNumber)
+	}
+
+	loadCosts, ok := chrobinson.BookingLoadCostsForLoadNumber(bookingRequest.LoadNumber)
+	if !ok || len(loadCosts) == 0 {
+		return fmt.Errorf("no cached availableLoadCosts found for loadNumber %d; provide availableLoadCosts or retry after the load is ingested", bookingRequest.LoadNumber)
+	}
+
+	bookingRequest.AvailableLoadCosts = loadCosts
+
+	log.WithFields(log.Fields{
+		"loadNumber":  bookingRequest.LoadNumber,
+		"carrierCode": bookingRequest.CarrierCode,
+		"offerResult": offer.OfferResult,
+		"costCount":   len(loadCosts),
+	}).Info("Derived booking availableLoadCosts from cached CHRob shipment data")
+
+	return nil
 }
 
 // DocumentUploadHandler handles uploading documents to C.H. Robinson.

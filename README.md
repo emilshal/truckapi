@@ -35,6 +35,8 @@ CHROB_GRANT_TYPE=client_credentials
 CHROB_BASE_URL - The base of the CHRobinson URL we are interacting with https://api.chrobinson.com
 SERVER_LISTEN_ADDR=:8080
 CHRobAccessToken - The token url stored in the environment variable
+CHROB_CALLBACK_BEARER_TOKEN - Shared bearer token required on CHRob callback endpoints
+CHROB_CALLBACK_ALLOW_API_KEY - Optional fallback for legacy callers; set to false to require bearer auth only
 
 ```
 
@@ -65,3 +67,16 @@ Practical Docker/Compose guidance:
 Bonus (recommended):
 
 - Have LoaderAPI dedupe incoming CHRob posts by `source + orderNumber` as defense in depth.
+
+## CHRob Callback Authentication
+
+The CHRob callback routes are:
+
+- `POST /offerResponse/callback/here`
+- `POST /shipmentDetails/callback/here`
+
+These endpoints require:
+
+- `Authorization: Bearer <CHROB_CALLBACK_BEARER_TOKEN>`
+
+If `CHROB_CALLBACK_ALLOW_API_KEY=false`, bearer auth is the only accepted method.

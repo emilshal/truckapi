@@ -68,8 +68,8 @@ func TestOfferCallbackAuthMiddleware_RejectsMissingAuth(t *testing.T) {
 	}
 }
 
-func TestOfferCallbackAuthMiddleware_AllowsNoAuthWhenNoBearerConfigured(t *testing.T) {
-	t.Setenv("CHROB_CALLBACK_BEARER_TOKEN", "")
+func TestOfferCallbackAuthMiddleware_RejectsWhenBearerIsNotConfigured(t *testing.T) {
+	t.Setenv("CHROB_CALLBACK_BEARER_TOKEN", " ")
 	t.Setenv("CHROB_CALLBACK_ALLOW_API_KEY", "true")
 	t.Setenv("API_KEY", "api-key")
 
@@ -80,13 +80,31 @@ func TestOfferCallbackAuthMiddleware_AllowsNoAuthWhenNoBearerConfigured(t *testi
 	if err != nil {
 		t.Fatalf("app.Test: %v", err)
 	}
-	if resp.StatusCode != fiber.StatusOK {
-		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	if resp.StatusCode != fiber.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", resp.StatusCode)
+	}
+}
+
+func TestOfferCallbackAuthMiddleware_RejectsAPIKeyWhenBearerIsNotConfigured(t *testing.T) {
+	t.Setenv("CHROB_CALLBACK_BEARER_TOKEN", " ")
+	t.Setenv("CHROB_CALLBACK_ALLOW_API_KEY", "true")
+	t.Setenv("API_KEY", "api-key")
+
+	app := newMiddlewareTestApp(OfferCallbackAuthMiddleware())
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Header.Set("X-API-KEY", "api-key")
+	resp, err := app.Test(req, 5000)
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", resp.StatusCode)
 	}
 }
 
 func TestOfferCallbackAuthMiddleware_RejectsInvalidAPIKeyWhenProvided(t *testing.T) {
-	t.Setenv("CHROB_CALLBACK_BEARER_TOKEN", "")
+	t.Setenv("CHROB_CALLBACK_BEARER_TOKEN", "callback-secret")
 	t.Setenv("CHROB_CALLBACK_ALLOW_API_KEY", "true")
 	t.Setenv("API_KEY", "api-key")
 

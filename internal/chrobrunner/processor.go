@@ -337,6 +337,9 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 			}
 			pageNow := time.Now()
 			for _, shipment := range searchResponse.Results {
+				if shipment.LoadNumber > 0 && len(shipment.AvailableLoadCosts) > 0 {
+					chrobinson.CacheAvailableLoadCosts(shipment.LoadNumber, shipment.AvailableLoadCosts)
+				}
 				if shipment.LoadNumber == 0 {
 					zeroLoadNumber++
 				}
@@ -627,6 +630,7 @@ func mapShipmentToLoaderOrder(shipment chrobinson.ShipmentInfo) loader.LoaderOrd
 	return loader.LoaderOrder{
 		Source:              "CHROBINSON",
 		OrderNumber:         fmt.Sprintf("CHROB-%d", shipment.LoadNumber),
+		ExternalLoadNumber:  shipment.LoadNumber,
 		PickupLocation:      pickupLocation,
 		DeliveryLocation:    deliveryLocation,
 		PickupDate:          pickupDate,
@@ -668,6 +672,7 @@ func mapShipmentToLoaderOrder(shipment chrobinson.ShipmentInfo) loader.LoaderOrd
 		Quantity:            0,
 		Stops:               stops,
 		TruckCompanyName:    companyName,
+		AvailableLoadCosts:  mapAvailableLoadCosts(shipment.AvailableLoadCosts),
 	}
 }
 
@@ -715,6 +720,36 @@ func sumLoadCosts(costs []chrobinson.AvailableLoadCost) float64 {
 		total += c.SourceCostPerUnit * float64(c.Units)
 	}
 	return total
+}
+
+func mapAvailableLoadCosts(costs []chrobinson.AvailableLoadCost) []loader.LoadCostMeta {
+	if len(costs) == 0 {
+		return nil
+	}
+
+	out := make([]loader.LoadCostMeta, 0, len(costs))
+	for _, cost := range costs {
+		out = append(out, loader.LoadCostMeta{
+			LoadNumber:        cost.LoadNumber,
+			CarrierCode:       cost.CarrierCode,
+			ExpirationDate:    cost.ExpirationDate,
+			Type:              cost.Type,
+			Code:              cost.Code,
+			Description:       cost.Description,
+			SourceCostPerUnit: cost.SourceCostPerUnit,
+			Units:             cost.Units,
+			CurrencyCode:      cost.CurrencyCode,
+			EmployeeCode:      cost.EmployeeCode,
+			EmployeeBranch:    cost.EmployeeBranch,
+			Score:             cost.Score,
+			CreatedDateTime:   cost.CreatedDateTime,
+			UpdatedDateTime:   cost.UpdatedDateTime,
+			BinCostKey:        cost.BinCostKey,
+			BinOfferable:      cost.BinOfferable,
+		})
+	}
+
+	return out
 }
 
 func mapTruckType(shipment chrobinson.ShipmentInfo, length float64) (string, int, string) {

@@ -805,20 +805,23 @@ type LoadOfferSubmitResponse struct {
 
 // OfferResponse represents the structure for an offer response callback.
 type OfferResponse struct {
-	ID               uint     `gorm:"primaryKey" json:"id"`
-	LoadNumber       int      `json:"loadNumber"`
-	CarrierCode      string   `json:"carrierCode"`
-	OfferRequestId   string   `json:"offerRequestId"`
-	OfferId          int      `json:"offerId"`
-	OfferResult      string   `json:"offerResult"`
-	Price            int      `json:"price"`
-	CurrencyCode     string   `json:"currencyCode"`
-	RejectReasons    []string `gorm:"-" json:"rejectReasons"`         // Ignore by GORM, handled manually
-	RejectReasonsStr string   `json:"-" gorm:"column:reject_reasons"` // JSON string representation
-	Status           string   `json:"status"`
-	RawPayload       string   `json:"rawPayload,omitempty" gorm:"type:text"`
-	CreatedAt        string   `json:"created_at"`
-	UpdatedAt        string   `json:"updated_at"`
+	ID                  uint     `gorm:"primaryKey" json:"id"`
+	LoadNumber          int      `json:"loadNumber"`
+	CarrierCode         string   `json:"carrierCode"`
+	OfferRequestId      string   `json:"offerRequestId"`
+	OfferId             int      `json:"offerId"`
+	OrderBidID          int      `json:"orderBidId,omitempty"`
+	OfferResult         string   `json:"offerResult"`
+	Price               int      `json:"price"`
+	CurrencyCode        string   `json:"currencyCode"`
+	RejectReasons       []string `gorm:"-" json:"rejectReasons"`         // Ignore by GORM, handled manually
+	RejectReasonsStr    string   `json:"-" gorm:"column:reject_reasons"` // JSON string representation
+	Status              string   `json:"status"`
+	BrokerResponseAt    string   `json:"brokerResponseAt,omitempty"`
+	BrokerResponseError string   `json:"brokerResponseError,omitempty"`
+	RawPayload          string   `json:"rawPayload,omitempty" gorm:"type:text"`
+	CreatedAt           string   `json:"created_at"`
+	UpdatedAt           string   `json:"updated_at"`
 }
 
 type Truck struct {

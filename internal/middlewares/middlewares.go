@@ -4,7 +4,6 @@ import (
 	"crypto/subtle"
 	"log"
 	"strings"
-	"sync"
 	"truckapi/pkg/config"
 
 	"github.com/gofiber/fiber/v2"
@@ -60,8 +59,6 @@ func bearerToken(c *fiber.Ctx) string {
 	return strings.TrimSpace(parts[1])
 }
 
-var callbackNoAuthWarning sync.Once
-
 // APIKeyMiddleware returns a middleware handler function for API key validation
 func APIKeyMiddleware() fiber.Handler {
 	return func(c *fiber.Ctx) error {
@@ -87,40 +84,35 @@ func BidEndpointAuthMiddleware() fiber.Handler {
 func OfferCallbackAuthMiddleware() fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		expectedBearer := strings.TrimSpace(config.GetEnv(config.CHRobCallbackBearerToken, ""))
-		allowAPIKey := envTruthy(config.CHRobCallbackAllowAPIKey, true)
+		allowAPIKey := envTruthy(config.CHRobCallbackAllowAPIKey, false)
 		apiKeyHeader := strings.TrimSpace(c.Get("X-API-KEY"))
 
-		if expectedBearer != "" {
-			got := bearerToken(c)
-			if got != "" && subtle.ConstantTimeCompare([]byte(got), []byte(expectedBearer)) == 1 {
-				return c.Next()
-			}
-			if allowAPIKey && apiKeyValid(c) {
-				return c.Next()
-			}
-			if !allowAPIKey || apiKeyHeader == "" {
-				log.Println("Invalid or missing callback bearer token")
-				return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-					"error": "Invalid or missing bearer token",
-				})
-			}
-			log.Println("Callback auth failed (bearer/api key)")
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-				"error": "Authentication failed",
+		if expectedBearer == "" {
+			log.Println("CHRob callback auth is not configured; rejecting callback")
+			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+				"error": "Callback authentication is not configured",
 			})
 		}
 
-		if apiKeyHeader != "" {
-			if apiKeyValid(c) {
-				return c.Next()
-			}
-			log.Println("Invalid API key")
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Invalid API key"})
+		got := bearerToken(c)
+		if got != "" && subtle.ConstantTimeCompare([]byte(got), []byte(expectedBearer)) == 1 {
+			return c.Next()
 		}
 
-		callbackNoAuthWarning.Do(func() {
-			log.Println("CHRob callback auth is not configured; allowing callback without authentication")
+		if allowAPIKey && apiKeyValid(c) {
+			return c.Next()
+		}
+
+		if !allowAPIKey || apiKeyHeader == "" {
+			log.Println("Invalid or missing callback bearer token")
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+				"error": "Invalid or missing bearer token",
+			})
+		}
+
+		log.Println("Callback auth failed (bearer/api key)")
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"error": "Authentication failed",
 		})
-		return c.Next()
 	}
 }

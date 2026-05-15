@@ -86,3 +86,9 @@ type RateConfirmMeta struct {
 	Email string `json:"email,omitempty"`
 	Name  string `json:"name,omitempty"`
 }
+
+type BrokerResponse struct {
+	OrderBidID  int    `json:"order_bid_id"`
+	OfferResult string `json:"offerResult"`
+	Price       int    `json:"price,omitempty"`
+}

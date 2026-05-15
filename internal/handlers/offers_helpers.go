@@ -29,6 +29,8 @@ type offerRequestInput struct {
 	OfferNote         string `json:"offerNote"`
 	CurrencyCode      string `json:"currencyCode"`
 	AvailableLoadCost *int   `json:"availableLoadCost"`
+	OrderBidID        *int   `json:"order_bid_id"`
+	OrderBidIDCamel   *int   `json:"orderBidId"`
 }
 
 type offerSubmitResponse struct {
@@ -174,10 +176,15 @@ func isAlpha3Currency(s string) bool {
 	return true
 }
 
-func validateAndBuildOfferRequest(raw []byte) (chrobinson.LoadOfferRequest, error) {
+type parsedOfferSubmitInput struct {
+	Request    chrobinson.LoadOfferRequest
+	OrderBidID int
+}
+
+func validateAndBuildOfferRequest(raw []byte) (parsedOfferSubmitInput, error) {
 	var input offerRequestInput
 	if err := decodeStrictJSON(raw, &input); err != nil {
-		return chrobinson.LoadOfferRequest{}, fiber.NewError(fiber.StatusBadRequest, "Invalid request data")
+		return parsedOfferSubmitInput{}, fiber.NewError(fiber.StatusBadRequest, "Invalid request data")
 	}
 
 	req := chrobinson.LoadOfferRequest{
@@ -191,19 +198,36 @@ func validateAndBuildOfferRequest(raw []byte) (chrobinson.LoadOfferRequest, erro
 		req.CurrencyCode = "USD"
 	}
 	if !isAlpha3Currency(req.CurrencyCode) {
-		return chrobinson.LoadOfferRequest{}, fiber.NewError(fiber.StatusBadRequest, "currencyCode must be a 3-letter code")
+		return parsedOfferSubmitInput{}, fiber.NewError(fiber.StatusBadRequest, "currencyCode must be a 3-letter code")
 	}
 	if len(req.OfferNote) > maxOfferNoteLength {
-		return chrobinson.LoadOfferRequest{}, fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("offerNote exceeds max length of %d", maxOfferNoteLength))
+		return parsedOfferSubmitInput{}, fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("offerNote exceeds max length of %d", maxOfferNoteLength))
 	}
 	if input.AvailableLoadCost != nil {
 		if *input.AvailableLoadCost <= 0 {
-			return chrobinson.LoadOfferRequest{}, fiber.NewError(fiber.StatusBadRequest, "availableLoadCost must be greater than 0 when provided")
+			return parsedOfferSubmitInput{}, fiber.NewError(fiber.StatusBadRequest, "availableLoadCost must be greater than 0 when provided")
 		}
 		req.AvailableLoadCost = *input.AvailableLoadCost
 	}
 
-	return req, nil
+	orderBidID := 0
+	if input.OrderBidID != nil {
+		orderBidID = *input.OrderBidID
+	}
+	if input.OrderBidIDCamel != nil {
+		if orderBidID != 0 && orderBidID != *input.OrderBidIDCamel {
+			return parsedOfferSubmitInput{}, fiber.NewError(fiber.StatusBadRequest, "order_bid_id and orderBidId must match when both are provided")
+		}
+		orderBidID = *input.OrderBidIDCamel
+	}
+	if orderBidID < 0 {
+		return parsedOfferSubmitInput{}, fiber.NewError(fiber.StatusBadRequest, "order_bid_id must be greater than or equal to 0")
+	}
+
+	return parsedOfferSubmitInput{
+		Request:    req,
+		OrderBidID: orderBidID,
+	}, nil
 }
 
 func sanitizeCHRobErrorDetail(err error) string {
