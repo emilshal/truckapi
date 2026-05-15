@@ -1,3 +1,4 @@
 truckapi
 logs/
 .env
+.tmp/
