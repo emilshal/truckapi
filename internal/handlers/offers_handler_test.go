@@ -397,7 +397,7 @@ func TestOfferResponseHandler_ForwardsBrokerResponseToLoaderAPI(t *testing.T) {
 
 	var received loader.BrokerResponse
 	loaderSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/loader/order-bids/broker-response" {
+		if r.URL.Path != "/api/v1/loader/chrobinson/order-bids/broker-response" {
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
 		if r.Header.Get("X-API-KEY") != "test-loader-key" {
@@ -497,6 +497,7 @@ func TestShipmentDetailsHandler_TracksCallbackInMemory(t *testing.T) {
 
 func TestBookLoadHandler_UsesCachedAvailableLoadCosts(t *testing.T) {
 	setupOfferResponseDB(t)
+	t.Setenv("CHROB_CARRIER_CODE", "T6263835")
 
 	var upstreamRequest chrobinson.LoadBookingRequest
 	client, _ := newTestCHRobAPIClient(t, func(w http.ResponseWriter, r *http.Request) {

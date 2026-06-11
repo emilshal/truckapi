@@ -755,9 +755,27 @@ type LoadBookingRequest struct {
 	LoadNumber         int              `json:"loadNumber"`
 	CarrierCode        string           `json:"carrierCode"`
 	EmptyDateTime      string           `json:"emptyDateTime"`
-	EmptyLocation      Location         `json:"emptyLocation"`
+	EmptyLocation      BookingLocation  `json:"emptyLocation"`
 	AvailableLoadCosts []LoadCost       `json:"availableLoadCosts"`
 	RateConfirmation   RateConfirmation `json:"rateConfirmation"`
+}
+
+// CHRob's booking schema is stricter than search:
+// - field names are latitude/longitude (not lat/lon)
+// - emptyLocation must include county and a coordinate
+// - extra empty fields trip validation; this type carries only what booking accepts.
+type BookingLocation struct {
+	City       string            `json:"city"`
+	State      string            `json:"state"`
+	Zip        string            `json:"zip"`
+	Country    string            `json:"country"`
+	County     string            `json:"county"`
+	Coordinate BookingCoordinate `json:"coordinate"`
+}
+
+type BookingCoordinate struct {
+	Latitude  float64 `json:"latitude"`
+	Longitude float64 `json:"longitude"`
 }
 
 type RateConfirmation struct {

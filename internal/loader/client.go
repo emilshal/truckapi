@@ -185,7 +185,7 @@ func (client *APIClient) CreateBrokerResponse(response BrokerResponse) error {
 		return fmt.Errorf("marshal loader broker response: %w", err)
 	}
 
-	url := client.BaseURL + "/api/v1/loader/order-bids/broker-response"
+	url := client.BaseURL + "/api/v1/loader/chrobinson/order-bids/broker-response"
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
 		return fmt.Errorf("build loader broker response request: %w", err)

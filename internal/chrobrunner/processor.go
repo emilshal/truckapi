@@ -196,6 +196,8 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 	postPool := loader.PostPool{Client: loaderClient}
 	enableLoaderPost := envTruthy("ENABLE_LOADER_POST", true)
 	enableUIFeed := envTruthy("ENABLE_UI_FEED", true)
+	searchRadiusMiles := envInt("CHROB_SEARCH_RADIUS_MILES", 250)
+	maxLocations := envInt("CHROB_SEARCH_MAX_LOCATIONS", 0)
 	// Always enforce a 24-hour send dedupe window for CHRob posts.
 	// We intentionally do not read this from env to prevent accidental overrides
 	// (e.g. short test TTLs) from causing duplicates in production-like runs.
@@ -205,6 +207,8 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 	log.WithFields(log.Fields{
 		"enable_loader_post":        enableLoaderPost,
 		"enable_ui_feed":            enableUIFeed,
+		"search_radius_miles":       searchRadiusMiles,
+		"max_locations":             maxLocations,
 		"sent_dedupe_ttl_minutes":   dedupeTTLMinutes,
 		"recent_sent_cache_entries": chrobRecentSentCache.Size(),
 		"dedupe_strategy":           "in_memory_loadnumber_or_fallback_hash",
@@ -215,6 +219,10 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 	cycleSeenKeys := make(map[string]struct{}, 8192)
 
 	for _, loc := range locations {
+		if maxLocations > 0 && processedLocations >= maxLocations {
+			log.WithField("max_locations", maxLocations).Info("CHRob search location cap reached; stopping cycle early")
+			break
+		}
 		lat, err := parseFloatField(loc.Latitude)
 		if err != nil {
 			log.WithError(err).Warnf("Skipping location with invalid latitude: %q", loc.Latitude)
@@ -247,7 +255,7 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 			OriginRadiusSearch: &chrobinson.RadiusSearch{
 				Coordinate: chrobinson.Coordinate{Lat: lat, Lon: lng},
 				Radius: chrobinson.Radius{
-					Value:         250,
+					Value:         searchRadiusMiles,
 					UnitOfMeasure: "Standard",
 				},
 			},
