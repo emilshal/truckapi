@@ -1,5 +1,7 @@
 package loader
 
+import "encoding/json"
+
 // LoaderOrder is the payload sent to the Loader API orders endpoint.
 type LoaderOrder struct {
 	Source              string  `json:"source"`
@@ -54,6 +56,12 @@ type LoaderOrder struct {
 	EmptyDateTime      string          `json:"emptyDateTime,omitempty"`
 	EmptyLocation      EmptyLocation   `json:"emptyLocation,omitempty"`
 	RateConfirmation   RateConfirmMeta `json:"rateConfirmation,omitempty"`
+
+	// OrderSnapshot carries the raw upstream payload (e.g. the full CHRob
+	// ShipmentInfo JSON) so the Loader can persist it verbatim into
+	// order_additional_features.order_snapshot keyed by the new orders.id.
+	// json.RawMessage embeds as nested JSON, not a string.
+	OrderSnapshot json.RawMessage `json:"orderSnapshot,omitempty"`
 }
 
 type LoadCostMeta struct {

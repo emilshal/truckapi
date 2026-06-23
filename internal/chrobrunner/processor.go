@@ -3,6 +3,7 @@ package chrobrunner
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"hash/fnv"
 	"os"
@@ -584,6 +585,17 @@ func StartChrobRunner(client *chrobinson.APIClient, feed *uifeed.Store) {
 }
 
 func mapShipmentToLoaderOrder(shipment chrobinson.ShipmentInfo) loader.LoaderOrder {
+	// Capture the raw CHRob shipment payload so the Loader can persist it
+	// into order_additional_features.order_snapshot. If marshal fails (it
+	// shouldn't for an in-memory struct), skip the snapshot — the order
+	// still POSTs successfully without it.
+	var snapshot json.RawMessage
+	if raw, err := json.Marshal(shipment); err == nil {
+		snapshot = raw
+	} else {
+		log.WithError(err).WithField("loadNumber", shipment.LoadNumber).Warn("Failed to marshal ShipmentInfo for snapshot; omitting")
+	}
+
 	pickupDate := pickBestDateTime(
 		shipment.CalculatedPickUpByDateTime,
 		shipment.PickUpByDate,
@@ -681,6 +693,7 @@ func mapShipmentToLoaderOrder(shipment chrobinson.ShipmentInfo) loader.LoaderOrd
 		Stops:               stops,
 		TruckCompanyName:    companyName,
 		AvailableLoadCosts:  mapAvailableLoadCosts(shipment.AvailableLoadCosts),
+		OrderSnapshot:       snapshot,
 	}
 }
 
