@@ -335,7 +335,7 @@ func OfferResponseHandler(c *fiber.Ctx) error {
 		"loadNumber":     offerResponse.LoadNumber.Int(),
 		"carrierCode":    offerResponse.CarrierCode,
 		"offerRequestId": offerResponse.OfferRequestId,
-		"offerId":        offerResponse.OfferId.Int(),
+		"offerId":        offerResponse.OfferId.String(),
 		"offerResult":    offerResponse.OfferResult,
 		"price":          offerResponse.Price.Int(),
 		"currencyCode":   offerResponse.CurrencyCode,
@@ -368,7 +368,7 @@ func OfferResponseHandler(c *fiber.Ctx) error {
 	record.LoadNumber = offerResponse.LoadNumber.Int()
 	record.CarrierCode = offerResponse.CarrierCode
 	record.OfferRequestId = offerResponse.OfferRequestId
-	record.OfferId = offerResponse.OfferId.Int()
+	record.OfferId = offerResponse.OfferId.String()
 	record.OfferResult = offerResponse.OfferResult
 	record.Price = offerResponse.Price.Int()
 	record.CurrencyCode = offerResponse.CurrencyCode

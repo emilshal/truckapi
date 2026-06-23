@@ -86,16 +86,20 @@ func (f FlexibleString) String() string {
 	return string(f)
 }
 
-// OfferResponseCallback matches CHRob's callback schema, which may serialize numeric fields as strings.
+// OfferResponseCallback matches CHRob's callback schema. CHRob's docs declare
+// offerId as a string, and in practice CHRob sends UUIDs (e.g.
+// "d300d898-8a52-4c2c-97ce-b6be9eebbcf6") — never assume it's parseable as an
+// int. loadNumber and price arrive as either JSON numbers or numeric strings,
+// which FlexibleInt handles.
 type OfferResponseCallback struct {
-	LoadNumber     FlexibleInt `json:"loadNumber"`
-	CarrierCode    string      `json:"carrierCode"`
-	OfferRequestId string      `json:"offerRequestId"`
-	OfferId        FlexibleInt `json:"offerId"`
-	OfferResult    string      `json:"offerResult"`
-	Price          FlexibleInt `json:"price"`
-	CurrencyCode   string      `json:"currencyCode"`
-	RejectReasons  []string    `json:"rejectReasons"`
+	LoadNumber     FlexibleInt    `json:"loadNumber"`
+	CarrierCode    string         `json:"carrierCode"`
+	OfferRequestId string         `json:"offerRequestId"`
+	OfferId        FlexibleString `json:"offerId"`
+	OfferResult    string         `json:"offerResult"`
+	Price          FlexibleInt    `json:"price"`
+	CurrencyCode   string         `json:"currencyCode"`
+	RejectReasons  []string       `json:"rejectReasons"`
 }
 
 // ShipmentDetailsCallback matches CHRob's shipment details callback schema.

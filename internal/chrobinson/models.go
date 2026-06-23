@@ -827,7 +827,7 @@ type OfferResponse struct {
 	LoadNumber          int      `json:"loadNumber"`
 	CarrierCode         string   `json:"carrierCode"`
 	OfferRequestId      string   `json:"offerRequestId"`
-	OfferId             int      `json:"offerId"`
+	OfferId             string   `json:"offerId"`
 	OrderBidID          int      `json:"orderBidId,omitempty"`
 	OfferResult         string   `json:"offerResult"`
 	Price               int      `json:"price"`

@@ -384,8 +384,8 @@ func TestOfferResponseHandler_AcceptsStringNumbers(t *testing.T) {
 	if record.LoadNumber != 546698145 {
 		t.Fatalf("expected loadNumber=546698145, got %d", record.LoadNumber)
 	}
-	if record.OfferId != 123 {
-		t.Fatalf("expected offerId=123, got %d", record.OfferId)
+	if record.OfferId != "123" {
+		t.Fatalf("expected offerId=\"123\", got %q", record.OfferId)
 	}
 	if record.Price != 2100 {
 		t.Fatalf("expected price=2100, got %d", record.Price)
