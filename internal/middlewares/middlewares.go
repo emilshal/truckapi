@@ -4,6 +4,7 @@ import (
 	"crypto/subtle"
 	"log"
 	"strings"
+	"truckapi/internal/oauthissuer"
 	"truckapi/pkg/config"
 
 	"github.com/gofiber/fiber/v2"
@@ -79,15 +80,22 @@ func BidEndpointAuthMiddleware() fiber.Handler {
 	return APIKeyMiddleware()
 }
 
-// OfferCallbackAuthMiddleware accepts a CHRob callback bearer token (preferred)
-// and can optionally allow API key fallback for backward compatibility.
+// OfferCallbackAuthMiddleware authenticates CHRob callbacks. It accepts, in
+// order: (1) a JWT we issued via /oauth/token (the path CHRob's config tool
+// requires — see internal/oauthissuer), (2) a static shared bearer token via
+// CHROB_CALLBACK_BEARER_TOKEN (legacy/manual setup), and (3) optionally an
+// X-API-KEY fallback if CHROB_CALLBACK_ALLOW_API_KEY=true.
+//
+// If neither OAuth nor static bearer is configured we fail closed with 503;
+// callbacks are never accepted unauthenticated.
 func OfferCallbackAuthMiddleware() fiber.Handler {
 	return func(c *fiber.Ctx) error {
+		oauthConfigured := oauthissuer.JWTSigningConfigured()
 		expectedBearer := strings.TrimSpace(config.GetEnv(config.CHRobCallbackBearerToken, ""))
 		allowAPIKey := envTruthy(config.CHRobCallbackAllowAPIKey, false)
 		apiKeyHeader := strings.TrimSpace(c.Get("X-API-KEY"))
 
-		if expectedBearer == "" {
+		if !oauthConfigured && expectedBearer == "" {
 			log.Println("CHRob callback auth is not configured; rejecting callback")
 			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
 				"error": "Callback authentication is not configured",
@@ -95,8 +103,15 @@ func OfferCallbackAuthMiddleware() fiber.Handler {
 		}
 
 		got := bearerToken(c)
-		if got != "" && subtle.ConstantTimeCompare([]byte(got), []byte(expectedBearer)) == 1 {
-			return c.Next()
+		if got != "" {
+			if oauthConfigured {
+				if err := oauthissuer.ValidateToken(got); err == nil {
+					return c.Next()
+				}
+			}
+			if expectedBearer != "" && subtle.ConstantTimeCompare([]byte(got), []byte(expectedBearer)) == 1 {
+				return c.Next()
+			}
 		}
 
 		if allowAPIKey && apiKeyValid(c) {

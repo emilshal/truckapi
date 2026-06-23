@@ -30,6 +30,14 @@ const (
 	CHRobEnv                 = "CHROB_ENV"
 	CHRobCallbackBearerToken = "CHROB_CALLBACK_BEARER_TOKEN"
 	CHRobCallbackAllowAPIKey = "CHROB_CALLBACK_ALLOW_API_KEY"
+	// OAuth 2.0 client_credentials issuer for CHRob callbacks.
+	// CHRob POSTs client_id/client_secret to our /oauth/token endpoint,
+	// receives a short-lived JWT signed with CallbackOAuthJWTSecret,
+	// then sends that JWT in `Authorization: Bearer` on the callback.
+	CallbackOAuthClientID        = "CALLBACK_OAUTH_CLIENT_ID"
+	CallbackOAuthClientSecret    = "CALLBACK_OAUTH_CLIENT_SECRET"
+	CallbackOAuthJWTSecret       = "CALLBACK_OAUTH_JWT_SECRET"
+	CallbackOAuthTokenTTLSeconds = "CALLBACK_OAUTH_TOKEN_TTL_SECONDS"
 	APIKey                   = "API_KEY"
 	OpenAIAPIKey             = "OPENAI_API_KEY"
 	EnableDatabases          = "ENABLE_DATABASES"
@@ -60,8 +68,12 @@ var (
 		"CHROB_ACCESS_TOKEN":     "",
 		"CHROB_CARRIER_CODE":     "T6263835",
 		CHRobEnv:                 "",
-		CHRobCallbackBearerToken: "",
-		CHRobCallbackAllowAPIKey: "false",
+		CHRobCallbackBearerToken:     "",
+		CHRobCallbackAllowAPIKey:     "false",
+		CallbackOAuthClientID:        "",
+		CallbackOAuthClientSecret:    "",
+		CallbackOAuthJWTSecret:       "",
+		CallbackOAuthTokenTTLSeconds: "3600",
 		"API_KEY":                "",
 		"OPENAI_API_KEY":         "",
 		EnableDatabases:          "false",
@@ -87,6 +99,10 @@ var (
 		CHRobEnv,
 		CHRobCallbackBearerToken,
 		CHRobCallbackAllowAPIKey,
+		CallbackOAuthClientID,
+		CallbackOAuthClientSecret,
+		CallbackOAuthJWTSecret,
+		CallbackOAuthTokenTTLSeconds,
 		"API_KEY",
 		"OPENAI_API_KEY",
 		EnableDatabases,

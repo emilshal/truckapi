@@ -38,6 +38,7 @@ require (
 )
 
 require (
+	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
 	github.com/savsgio/gotils v0.0.0-20230208104028-c358bd845dee // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 )

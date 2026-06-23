@@ -41,6 +41,11 @@ func InitializeRoutes(apiClient *chrobinson.APIClient, feed *uifeed.Store) *fibe
 		},
 	}))
 
+	// OAuth 2.0 client_credentials token endpoint used by CHRob's callback
+	// dispatcher: CHRob fetches a JWT here and sends it as Bearer on the
+	// /offerResponse and /shipmentDetails callbacks below.
+	fiberApp.Post("/oauth/token", handlers.OAuthTokenHandler())
+
 	// Webhook endpoint for C.H. Robinson events
 	fiberApp.Post("/events/callback/here", handlers.EventCallbackHandler)
 
