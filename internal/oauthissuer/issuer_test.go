@@ -3,6 +3,7 @@ package oauthissuer
 import (
 	"errors"
 	"testing"
+	"strings"
 	"time"
 	"truckapi/pkg/config"
 
@@ -88,11 +89,23 @@ func TestValidateToken_TamperedSignature(t *testing.T) {
 	if err != nil {
 		t.Fatalf("IssueToken: %v", err)
 	}
-	// Flip the last char of the signature.
-	tampered := resp.AccessToken[:len(resp.AccessToken)-1] + "A"
-	if tampered == resp.AccessToken {
-		tampered = resp.AccessToken[:len(resp.AccessToken)-1] + "B"
+	// Replace the middle ~8 chars of the signature (48 effective bits) so
+	// the probability of accidentally producing a valid HMAC is ~1/2^48,
+	// not the ~1/64 you'd get from flipping one base64 char.
+	lastDot := strings.LastIndex(resp.AccessToken, ".")
+	if lastDot < 0 || lastDot >= len(resp.AccessToken)-1 {
+		t.Fatalf("token has no signature segment: %q", resp.AccessToken)
 	}
+	sig := resp.AccessToken[lastDot+1:]
+	mid := len(sig) / 2
+	if mid+8 > len(sig) {
+		t.Fatalf("signature unexpectedly short: %q", sig)
+	}
+	garbage := "ZZZZZZZZ"
+	if sig[mid:mid+8] == garbage {
+		garbage = "WWWWWWWW"
+	}
+	tampered := resp.AccessToken[:lastDot+1] + sig[:mid] + garbage + sig[mid+8:]
 	if err := ValidateToken(tampered); err == nil {
 		t.Fatal("expected error for tampered token")
 	}
