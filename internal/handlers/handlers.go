@@ -325,7 +325,11 @@ func OfferResponseHandler(c *fiber.Ctx) error {
 	rawBody := append([]byte(nil), c.Body()...)
 	var offerResponse chrobinson.OfferResponseCallback
 	if err := json.Unmarshal(rawBody, &offerResponse); err != nil {
-		logrus.WithError(err).Error("Failed to parse offer response")
+		logrus.WithError(err).WithFields(logrus.Fields{
+			"body_len":     len(rawBody),
+			"raw_body":     string(rawBody),
+			"content_type": string(c.Request().Header.ContentType()),
+		}).Error("Failed to parse offer response")
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"error": "Invalid offer response data",
 		})
@@ -418,8 +422,7 @@ func OfferResponseHandler(c *fiber.Ctx) error {
 		}).Warn("Offer response received without stored order_bid_id; Loader broker response not forwarded")
 	}
 
-	c.Set(fiber.HeaderContentType, "text/plain; charset=utf-8")
-	return c.Status(fiber.StatusOK).SendString("ok")
+	return c.Status(fiber.StatusOK).JSON(fiber.Map{"status": "ok"})
 }
 
 // ShipmentDetailsHandler handles the callback for shipment details.
@@ -457,8 +460,7 @@ func ShipmentDetailsHandler(c *fiber.Ctx) error {
 		RawPayload:   string(rawBody),
 	})
 
-	c.Set(fiber.HeaderContentType, "text/plain; charset=utf-8")
-	return c.Status(fiber.StatusOK).SendString("ok")
+	return c.Status(fiber.StatusOK).JSON(fiber.Map{"status": "ok"})
 }
 
 // Handles the route for submitting a load offer.
