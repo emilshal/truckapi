@@ -745,20 +745,22 @@ func populateBookingRequestFromOffer(bookingRequest *chrobinson.LoadBookingReque
 		return nil
 	}
 
-	offer, ok := runtimeStore.latestOfferByLoadNumber(bookingRequest.LoadNumber)
-	if !ok {
-		return fmt.Errorf("availableLoadCosts must include at least one item")
-	}
-	if bookingRequest.CarrierCode == "" && offer.CarrierCode != "" {
-		bookingRequest.CarrierCode = offer.CarrierCode
-	}
-	if offer.Status != "booked" && offer.Status != "countered" {
-		return fmt.Errorf("cannot derive booking cost for loadNumber %d without an accepted or countered offer response", bookingRequest.LoadNumber)
+	// Preferred path: derive costs from a prior accepted/countered offer for
+	// this load. If there's no such offer (e.g. a direct book without bidding
+	// first, or the offer was lost on restart), fall back to the search cost
+	// cache — costs are cached for every load we search, independent of offers.
+	if offer, ok := runtimeStore.latestOfferByLoadNumber(bookingRequest.LoadNumber); ok {
+		if bookingRequest.CarrierCode == "" && offer.CarrierCode != "" {
+			bookingRequest.CarrierCode = offer.CarrierCode
+		}
+		if offer.Status != "booked" && offer.Status != "countered" {
+			return fmt.Errorf("cannot derive booking cost for loadNumber %d without an accepted or countered offer response", bookingRequest.LoadNumber)
+		}
 	}
 
 	loadCosts, ok := chrobinson.BookingLoadCostsForLoadNumber(bookingRequest.LoadNumber)
 	if !ok || len(loadCosts) == 0 {
-		return fmt.Errorf("no cached availableLoadCosts found for loadNumber %d; provide availableLoadCosts or retry after the load is ingested", bookingRequest.LoadNumber)
+		return fmt.Errorf("no cached availableLoadCosts found for loadNumber %d; provide availableLoadCosts in the request or retry after the load has been searched/ingested", bookingRequest.LoadNumber)
 	}
 
 	bookingRequest.AvailableLoadCosts = loadCosts
@@ -766,7 +768,6 @@ func populateBookingRequestFromOffer(bookingRequest *chrobinson.LoadBookingReque
 	log.WithFields(log.Fields{
 		"loadNumber":  bookingRequest.LoadNumber,
 		"carrierCode": bookingRequest.CarrierCode,
-		"offerResult": offer.OfferResult,
 		"costCount":   len(loadCosts),
 	}).Info("Derived booking availableLoadCosts from cached CHRob shipment data")
 
