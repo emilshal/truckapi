@@ -316,3 +316,31 @@ func resolveCarrierAliases(tSnake, tCamel, carrierCode string) (string, error) {
 	}
 	return first, nil
 }
+
+// parseLoadNumber extracts a numeric CHRob load number from a raw JSON token
+// that may be a JSON number (202237619), a quoted number ("202237619"), or the
+// Loader's "CHROB-" prefixed order id ("CHROB-202237619"). The prefix match is
+// case-insensitive. Returns (0, false) when the value is empty/absent or has no
+// positive numeric load number.
+func parseLoadNumber(raw json.RawMessage) (int, bool) {
+	s := strings.TrimSpace(string(raw))
+	if s == "" || s == "null" {
+		return 0, false
+	}
+	// Unwrap a JSON string token ("...") to its inner value.
+	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
+		var unquoted string
+		if err := json.Unmarshal(raw, &unquoted); err == nil {
+			s = strings.TrimSpace(unquoted)
+		}
+	}
+	// Strip a leading "CHROB-" (any case) if present.
+	if len(s) >= 6 && strings.EqualFold(s[:6], "CHROB-") {
+		s = s[6:]
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	return n, true
+}

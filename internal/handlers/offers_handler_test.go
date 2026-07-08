@@ -404,6 +404,50 @@ func TestBookLoadHandler_AcceptsSnakeCaseLoadNumberAndOrderBidID(t *testing.T) {
 	}
 }
 
+func TestBookLoadHandler_AcceptsCHRobPrefixedLoadNumberAndStringBidID(t *testing.T) {
+	setupOfferResponseDB(t)
+
+	var upstream chrobinson.LoadBookingRequest
+	client, _ := newTestCHRobAPIClient(t, func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&upstream)
+		w.WriteHeader(http.StatusAccepted)
+	})
+
+	app := newOfferTestApp(client)
+	// The colleague's exact shape: load_number prefixed with "CHROB-" and
+	// order_bid_id sent as a quoted string.
+	body := `{"load_number":"CHROB-202237619","t_number":"T6323830","order_bid_id":"13075604","emptyDateTime":"2026-07-06T06:00:00Z","emptyLocation":{"city":"SD","state":"CA","country":"US","zip":"92126"},"availableLoadCosts":[{"type":"Flat","code":"400","description":"Line Haul","sourceCostPerUnit":1600,"units":1,"currencyCode":"USD"}],"rateConfirmation":{"email":"o@e.com","name":"O"}}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/shipments/books", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := app.Test(req, 5000)
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusAccepted {
+		t.Fatalf("expected 202, got %d", resp.StatusCode)
+	}
+	if upstream.LoadNumber != 202237619 {
+		t.Fatalf("expected CHROB- prefix stripped to 202237619, got %d", upstream.LoadNumber)
+	}
+	if upstream.CarrierCode != "T6323830" {
+		t.Fatalf("expected carrierCode=T6323830, got %q", upstream.CarrierCode)
+	}
+
+	var ack map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&ack); err != nil {
+		t.Fatalf("decode ack: %v", err)
+	}
+	if ack["order_bid_id"] != float64(13075604) {
+		t.Fatalf("expected ack order_bid_id=13075604, got %v", ack["order_bid_id"])
+	}
+
+	records := runtimeStore.listBookings()
+	if len(records) != 1 || records[0].OrderBidID != 13075604 {
+		t.Fatalf("expected booking OrderBidID=13075604, got %+v", records)
+	}
+}
+
 func TestBookLoadHandler_RejectsMismatchedTNumberAliases(t *testing.T) {
 	setupOfferResponseDB(t)
 	client, _ := newTestCHRobAPIClient(t, func(w http.ResponseWriter, r *http.Request) {

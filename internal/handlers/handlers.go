@@ -188,13 +188,13 @@ func BookLoadHandler(apiClient *chrobinson.APIClient) fiber.Handler {
 		//   - order_bid_id: captured so the booking record can carry it for the
 		//     eventual forward back to Loader.
 		var bookAliases struct {
-			TNumber         string      `json:"t_number"`
-			TNumberCamel    string      `json:"tNumber"`
-			CarrierCode     string      `json:"carrierCode"`
-			LoadNumberSnake json.Number `json:"load_number"`
-			LoadNumberCamel json.Number `json:"loadNumber"`
-			OrderBidID      *int        `json:"order_bid_id"`
-			OrderBidIDCamel *int        `json:"orderBidId"`
+			TNumber         string          `json:"t_number"`
+			TNumberCamel    string          `json:"tNumber"`
+			CarrierCode     string          `json:"carrierCode"`
+			LoadNumberSnake json.RawMessage `json:"load_number"`
+			LoadNumberCamel json.RawMessage `json:"loadNumber"`
+			OrderBidID      json.Number     `json:"order_bid_id"`
+			OrderBidIDCamel json.Number     `json:"orderBidId"`
 		}
 		_ = json.Unmarshal(c.Body(), &bookAliases)
 
@@ -209,32 +209,35 @@ func BookLoadHandler(apiClient *chrobinson.APIClient) fiber.Handler {
 			bookingRequest.CarrierCode = resolvedCarrier
 		}
 
-		// Reconcile the load number from the snake_case alias when the native
-		// camelCase field didn't populate it (handles string-encoded values too).
+		// Reconcile the load number from the aliases when the native camelCase
+		// field didn't populate it. The Loader stores CHRob orders with a
+		// "CHROB-" prefix (that's how our runner posts them), so a book may
+		// arrive as "CHROB-202237619" — strip the prefix and accept the digits.
+		// Also tolerate plain string-encoded numbers ("202237619").
 		if bookingRequest.LoadNumber == 0 {
-			for _, raw := range []json.Number{bookAliases.LoadNumberSnake, bookAliases.LoadNumberCamel} {
-				if raw == "" {
-					continue
-				}
-				if n, convErr := strconv.Atoi(raw.String()); convErr == nil && n > 0 {
+			for _, raw := range []json.RawMessage{bookAliases.LoadNumberSnake, bookAliases.LoadNumberCamel} {
+				if n, ok := parseLoadNumber(raw); ok {
 					bookingRequest.LoadNumber = n
 					break
 				}
 			}
 		}
 
-		// Capture the Loader's bid row id (snake or camel) for the booking record.
+		// Capture the Loader's bid row id (snake or camel), accepting numeric or
+		// string-encoded values.
 		orderBidID := 0
-		if bookAliases.OrderBidID != nil {
-			orderBidID = *bookAliases.OrderBidID
-		}
-		if bookAliases.OrderBidIDCamel != nil {
-			if orderBidID != 0 && orderBidID != *bookAliases.OrderBidIDCamel {
-				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-					"error": "order_bid_id and orderBidId must match when both are provided",
-				})
+		for _, raw := range []json.Number{bookAliases.OrderBidID, bookAliases.OrderBidIDCamel} {
+			if raw == "" {
+				continue
 			}
-			orderBidID = *bookAliases.OrderBidIDCamel
+			if n, convErr := strconv.Atoi(raw.String()); convErr == nil && n != 0 {
+				if orderBidID != 0 && orderBidID != n {
+					return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+						"error": "order_bid_id and orderBidId must match when both are provided",
+					})
+				}
+				orderBidID = n
+			}
 		}
 
 		if bookingRequest.CarrierCode == "" {
