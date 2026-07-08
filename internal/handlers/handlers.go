@@ -396,6 +396,7 @@ func OfferResponseHandler(c *fiber.Ctx) error {
 				OrderBidID:  record.OrderBidID,
 				OfferResult: offerResponse.OfferResult,
 				Price:       offerResponse.Price.Int(),
+				TNumber:     record.CarrierCode,
 			})
 			if forwardErr != nil {
 				record.BrokerResponseError = forwardErr.Error()
@@ -578,6 +579,7 @@ func SubmitLoadOfferHandler(apiClient *chrobinson.APIClient) fiber.Handler {
 		response := offerSubmitResponse{
 			Message:        "Load offer submitted successfully",
 			LoadNumber:     loadNumber,
+			TNumber:        offerRequest.CarrierCode,
 			OfferRequestID: submitResponse.OfferRequestId,
 			Status:         "pending",
 			Persisted:      persisted,

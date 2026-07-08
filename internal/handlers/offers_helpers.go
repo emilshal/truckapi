@@ -25,6 +25,8 @@ const (
 
 type offerRequestInput struct {
 	CarrierCode       string `json:"carrierCode"`
+	TNumber           string `json:"t_number"`
+	TNumberCamel      string `json:"tNumber"`
 	OfferPrice        int    `json:"offerPrice"`
 	OfferNote         string `json:"offerNote"`
 	CurrencyCode      string `json:"currencyCode"`
@@ -36,6 +38,7 @@ type offerRequestInput struct {
 type offerSubmitResponse struct {
 	Message          string `json:"message"`
 	LoadNumber       string `json:"loadNumber"`
+	TNumber          string `json:"t_number,omitempty"`
 	OfferRequestID   string `json:"offerRequestId"`
 	Status           string `json:"status"`
 	Persisted        bool   `json:"persisted"`
@@ -187,8 +190,13 @@ func validateAndBuildOfferRequest(raw []byte) (parsedOfferSubmitInput, error) {
 		return parsedOfferSubmitInput{}, fiber.NewError(fiber.StatusBadRequest, "Invalid request data")
 	}
 
+	carrier, err := resolveCarrierAliases(input.TNumber, input.TNumberCamel, input.CarrierCode)
+	if err != nil {
+		return parsedOfferSubmitInput{}, err
+	}
+
 	req := chrobinson.LoadOfferRequest{
-		CarrierCode:  strings.TrimSpace(input.CarrierCode),
+		CarrierCode:  carrier,
 		OfferPrice:   input.OfferPrice,
 		OfferNote:    strings.TrimSpace(input.OfferNote),
 		CurrencyCode: strings.ToUpper(strings.TrimSpace(input.CurrencyCode)),
@@ -284,4 +292,27 @@ func chrobOfferSubmitErrorResponse(err error) (int, fiber.Map) {
 	}
 
 	return responseStatus, body
+}
+
+// resolveCarrierAliases picks the carrier code from any of the accepted input
+// keys: t_number (preferred), tNumber, or the legacy carrierCode. If more than
+// one is provided they must all match; otherwise a 400 is returned so callers
+// notice the ambiguity instead of silently losing one value.
+func resolveCarrierAliases(tSnake, tCamel, carrierCode string) (string, error) {
+	values := []string{}
+	for _, v := range []string{tSnake, tCamel, carrierCode} {
+		if trimmed := strings.TrimSpace(v); trimmed != "" {
+			values = append(values, trimmed)
+		}
+	}
+	if len(values) == 0 {
+		return "", nil
+	}
+	first := values[0]
+	for _, v := range values[1:] {
+		if v != first {
+			return "", fiber.NewError(fiber.StatusBadRequest, "t_number, tNumber, and carrierCode must match when more than one is provided")
+		}
+	}
+	return first, nil
 }

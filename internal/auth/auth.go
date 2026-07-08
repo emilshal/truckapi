@@ -23,9 +23,32 @@ type TokenStore struct {
 	sync.Mutex
 	token     string
 	expiresAt time.Time
+	// lastRefreshErrAt records when the most recent token refresh failed.
+	// While inside the cooldown window we refuse to hammer CHRob's token
+	// endpoint again — otherwise a bad-credential state causes every one of
+	// the ~36 per-cycle searches (times the 401-retry) to re-request a token,
+	// which trips CHRob's rate limiter (429). Zero value means "no recent
+	// failure".
+	lastRefreshErrAt time.Time
 }
 
 const fallbackTokenTTL = 24 * time.Hour
+
+// defaultTokenRefreshBackoff is how long we wait after a failed token refresh
+// before attempting another. Overridable via CHROB_TOKEN_REFRESH_BACKOFF_SECONDS.
+const defaultTokenRefreshBackoff = 60 * time.Second
+
+func tokenRefreshBackoff() time.Duration {
+	raw := strings.TrimSpace(config.GetEnv("CHROB_TOKEN_REFRESH_BACKOFF_SECONDS", ""))
+	if raw == "" {
+		return defaultTokenRefreshBackoff
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return defaultTokenRefreshBackoff
+	}
+	return time.Duration(n) * time.Second
+}
 
 // Function used to create a new instance of the TokenStore
 func NewTokenStore() *TokenStore {
@@ -209,14 +232,39 @@ func (store *TokenStore) GetToken() (string, bool) {
 	return "", false // Return an empty string and a false bool if token is expired.
 }
 
+// errTokenRefreshBackoff is returned when a refresh is skipped because the
+// previous attempt failed within the backoff window.
+var errTokenRefreshBackoff = fmt.Errorf("token refresh suppressed: within failure backoff window")
+
 func (store *TokenStore) RefreshToken() error {
+	// If a recent refresh failed, don't retry until the cooldown elapses. This
+	// is the guard that stops a bad-credential state from spraying the token
+	// endpoint and tripping CHRob's 429 rate limiter.
+	store.Lock()
+	if !store.lastRefreshErrAt.IsZero() {
+		if since := time.Since(store.lastRefreshErrAt); since < tokenRefreshBackoff() {
+			remaining := tokenRefreshBackoff() - since
+			store.Unlock()
+			log.WithField("retry_in_seconds", int(remaining.Seconds())).
+				Warn("Skipping token refresh; previous attempt failed and we are within the backoff window")
+			return errTokenRefreshBackoff
+		}
+	}
+	store.Unlock()
+
 	log.Info("Refreshing token")
 	tokenResponse, err := GenerateToken()
 	if err != nil {
+		store.Lock()
+		store.lastRefreshErrAt = time.Now().UTC()
+		store.Unlock()
 		log.WithError(err).Error("Failed to generate new token")
 		return err
 	}
 	store.SetToken(tokenResponse.AccessToken, time.Duration(tokenResponse.ExpiresIn)*time.Second)
+	store.Lock()
+	store.lastRefreshErrAt = time.Time{} // clear on success
+	store.Unlock()
 	log.Info("Token refreshed successfully")
 	return nil
 }

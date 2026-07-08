@@ -99,4 +99,5 @@ type BrokerResponse struct {
 	OrderBidID  int    `json:"order_bid_id"`
 	OfferResult string `json:"offerResult"`
 	Price       int    `json:"price,omitempty"`
+	TNumber     string `json:"t_number,omitempty"`
 }

@@ -198,6 +198,78 @@ func TestSubmitLoadOfferHandler_StoresOrderBidID(t *testing.T) {
 	}
 }
 
+func TestSubmitLoadOfferHandler_AcceptsTNumberAliases(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"snake t_number", `{"t_number":"T100","offerPrice":500}`},
+		{"camel tNumber", `{"tNumber":"T100","offerPrice":500}`},
+		{"legacy carrierCode", `{"carrierCode":"T100","offerPrice":500}`},
+		{"snake + legacy match", `{"t_number":"T100","carrierCode":"T100","offerPrice":500}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			setupOfferResponseDB(t)
+			resetOfferSubmitIdempotencyForTests()
+
+			var upstream chrobinson.LoadOfferRequest
+			client, _ := newTestCHRobAPIClient(t, func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewDecoder(r.Body).Decode(&upstream)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusAccepted)
+				_, _ = w.Write([]byte(`{"offerRequestId":"offer-req-alias"}`))
+			})
+
+			app := newOfferTestApp(client)
+			req := httptest.NewRequest(http.MethodPost, "/v1/shipments/123/offers",
+				bytes.NewBufferString(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+
+			resp, err := app.Test(req, 5000)
+			if err != nil {
+				t.Fatalf("app.Test: %v", err)
+			}
+			if resp.StatusCode != fiber.StatusAccepted {
+				t.Fatalf("expected 202, got %d", resp.StatusCode)
+			}
+			if upstream.CarrierCode != "T100" {
+				t.Fatalf("expected forwarded carrierCode=T100, got %q", upstream.CarrierCode)
+			}
+
+			var ack map[string]any
+			if err := json.NewDecoder(resp.Body).Decode(&ack); err != nil {
+				t.Fatalf("decode ack body: %v", err)
+			}
+			if ack["t_number"] != "T100" {
+				t.Fatalf("expected ack to echo t_number=T100, got %v", ack["t_number"])
+			}
+		})
+	}
+}
+
+func TestSubmitLoadOfferHandler_RejectsMismatchedTNumberAliases(t *testing.T) {
+	setupOfferResponseDB(t)
+	resetOfferSubmitIdempotencyForTests()
+
+	client, _ := newTestCHRobAPIClient(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("upstream must not be called when aliases mismatch")
+	})
+
+	app := newOfferTestApp(client)
+	req := httptest.NewRequest(http.MethodPost, "/v1/shipments/123/offers",
+		bytes.NewBufferString(`{"t_number":"T100","carrierCode":"T999","offerPrice":500}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := app.Test(req, 5000)
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", resp.StatusCode)
+	}
+}
+
 func setupOfferResponseDB(t *testing.T) {
 	t.Helper()
 	resetRuntimeStoreForTests()
@@ -334,7 +406,7 @@ func TestOfferResponseHandler_StatusMapping(t *testing.T) {
 	}
 }
 
-func TestOfferResponseHandler_ReturnsPlainText2xx(t *testing.T) {
+func TestOfferResponseHandler_ReturnsJSON2xx(t *testing.T) {
 	setupOfferResponseDB(t)
 	app := newOfferTestApp(nil)
 
@@ -351,12 +423,12 @@ func TestOfferResponseHandler_ReturnsPlainText2xx(t *testing.T) {
 	}
 	buf := new(bytes.Buffer)
 	_, _ = buf.ReadFrom(resp.Body)
-	if strings.TrimSpace(buf.String()) != "ok" {
-		t.Fatalf("expected plain text ok, got %q", buf.String())
+	if strings.TrimSpace(buf.String()) != `{"status":"ok"}` {
+		t.Fatalf("expected JSON body {\"status\":\"ok\"}, got %q", buf.String())
 	}
 	contentType := resp.Header.Get("Content-Type")
-	if !strings.Contains(contentType, "text/plain") {
-		t.Fatalf("expected text/plain content type, got %q", contentType)
+	if !strings.Contains(contentType, "application/json") {
+		t.Fatalf("expected application/json content type, got %q", contentType)
 	}
 }
 
@@ -447,6 +519,9 @@ func TestOfferResponseHandler_ForwardsBrokerResponseToLoaderAPI(t *testing.T) {
 	}
 	if received.Price != 900 {
 		t.Fatalf("expected price=900, got %d", received.Price)
+	}
+	if received.TNumber != "T100" {
+		t.Fatalf("expected t_number=T100, got %q", received.TNumber)
 	}
 
 	offers := runtimeStore.listOffers()
