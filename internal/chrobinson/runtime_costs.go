@@ -60,6 +60,7 @@ func ResetRuntimeAvailableLoadCostsForTests() {
 	runtimePickupDefaults.mu.Lock()
 	defer runtimePickupDefaults.mu.Unlock()
 	runtimePickupDefaults.byLoad = make(map[int]PickupDefaults)
+	runtimePickupDefaults.recent = nil
 }
 
 // PickupDefaults holds the load's origin and pickup timing captured at search
@@ -73,18 +74,30 @@ type PickupDefaults struct {
 type pickupDefaultsStore struct {
 	mu     sync.RWMutex
 	byLoad map[int]PickupDefaults
+	recent []int
 }
 
 var runtimePickupDefaults = &pickupDefaultsStore{byLoad: make(map[int]PickupDefaults)}
 
 // CachePickupDefaults stores the origin + pickup datetime for a load. Safe to
-// call alongside CacheAvailableLoadCosts on every search result.
+// call alongside CacheAvailableLoadCosts on every search result. Bounded to the
+// same capacity as the cost cache so the runner's high search volume can't grow
+// this map without limit.
 func CachePickupDefaults(loadNumber int, origin Location, pickupDateTime string) {
 	if loadNumber <= 0 {
 		return
 	}
 	runtimePickupDefaults.mu.Lock()
 	defer runtimePickupDefaults.mu.Unlock()
+
+	if _, exists := runtimePickupDefaults.byLoad[loadNumber]; !exists {
+		runtimePickupDefaults.recent = append(runtimePickupDefaults.recent, loadNumber)
+		for len(runtimePickupDefaults.recent) > runtimeAvailableLoadCostsMaxItems {
+			stale := runtimePickupDefaults.recent[0]
+			runtimePickupDefaults.recent = runtimePickupDefaults.recent[1:]
+			delete(runtimePickupDefaults.byLoad, stale)
+		}
+	}
 	runtimePickupDefaults.byLoad[loadNumber] = PickupDefaults{Origin: origin, PickupDateTime: pickupDateTime}
 }
 
