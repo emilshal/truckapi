@@ -56,6 +56,44 @@ func ResetRuntimeAvailableLoadCostsForTests() {
 
 	runtimeAvailableLoadCosts.byLoad = make(map[int][]AvailableLoadCost)
 	runtimeAvailableLoadCosts.recentLoads = runtimeAvailableLoadCosts.recentLoads[:0]
+
+	runtimePickupDefaults.mu.Lock()
+	defer runtimePickupDefaults.mu.Unlock()
+	runtimePickupDefaults.byLoad = make(map[int]PickupDefaults)
+}
+
+// PickupDefaults holds the load's origin and pickup timing captured at search
+// time, so a booking that omits emptyLocation/emptyDateTime can default to the
+// pickup origin (a truck arriving empty at the pickup on the pickup date).
+type PickupDefaults struct {
+	Origin         Location
+	PickupDateTime string
+}
+
+type pickupDefaultsStore struct {
+	mu     sync.RWMutex
+	byLoad map[int]PickupDefaults
+}
+
+var runtimePickupDefaults = &pickupDefaultsStore{byLoad: make(map[int]PickupDefaults)}
+
+// CachePickupDefaults stores the origin + pickup datetime for a load. Safe to
+// call alongside CacheAvailableLoadCosts on every search result.
+func CachePickupDefaults(loadNumber int, origin Location, pickupDateTime string) {
+	if loadNumber <= 0 {
+		return
+	}
+	runtimePickupDefaults.mu.Lock()
+	defer runtimePickupDefaults.mu.Unlock()
+	runtimePickupDefaults.byLoad[loadNumber] = PickupDefaults{Origin: origin, PickupDateTime: pickupDateTime}
+}
+
+// PickupDefaultsForLoadNumber returns cached pickup defaults for a load.
+func PickupDefaultsForLoadNumber(loadNumber int) (PickupDefaults, bool) {
+	runtimePickupDefaults.mu.RLock()
+	defer runtimePickupDefaults.mu.RUnlock()
+	d, ok := runtimePickupDefaults.byLoad[loadNumber]
+	return d, ok
 }
 
 func (s *availableLoadCostStore) put(loadNumber int, costs []AvailableLoadCost) {

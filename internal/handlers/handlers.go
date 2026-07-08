@@ -87,6 +87,9 @@ func SearchAvailableShipmentsHandler(apiClient *chrobinson.APIClient) fiber.Hand
 				if shipment.LoadNumber > 0 && len(shipment.AvailableLoadCosts) > 0 {
 					chrobinson.CacheAvailableLoadCosts(shipment.LoadNumber, shipment.AvailableLoadCosts)
 				}
+				if shipment.LoadNumber > 0 {
+					chrobinson.CachePickupDefaults(shipment.LoadNumber, shipment.Origin, firstNonEmptyBooking(shipment.CalculatedPickUpByDateTime, shipment.PickUpByDate, shipment.ReadyBy))
+				}
 			}
 			// Before sending the response
 			log.Infof("Sending search response: %+v", searchResponse)
@@ -248,6 +251,14 @@ func BookLoadHandler(apiClient *chrobinson.APIClient) fiber.Handler {
 				"error": "loadNumber is required",
 			})
 		}
+
+		// CHRob requires emptyLocation, emptyDateTime, and rateConfirmation. The
+		// Loader colleague sends only load/carrier/bid ids, so default the
+		// logistics fields from the load's pickup origin (a truck arriving empty
+		// at the pickup on the pickup date) when the caller omits them. Any field
+		// the caller DID send is preserved.
+		applyBookingDefaults(&bookingRequest)
+
 		if err := populateBookingRequestFromOffer(&bookingRequest); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 				"error": err.Error(),
@@ -807,5 +818,62 @@ func DocumentUploadHandler(apiClient *chrobinson.APIClient) fiber.Handler {
 		return c.Status(fiber.StatusCreated).JSON(fiber.Map{
 			"message": "Document uploaded successfully",
 		})
+	}
+}
+
+// firstNonEmptyBooking returns the first non-empty trimmed string, or "".
+func firstNonEmptyBooking(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// applyBookingDefaults fills the CHRob-required logistics fields
+// (emptyLocation, emptyDateTime, rateConfirmation) from the load's cached
+// pickup origin when the caller omitted them. Callers that DO supply these
+// fields keep their values — we only fill blanks. This lets the Loader book
+// with just load/carrier/bid ids, defaulting the truck's empty position to the
+// pickup location on the pickup date.
+func applyBookingDefaults(req *chrobinson.LoadBookingRequest) {
+	if req == nil || req.LoadNumber == 0 {
+		return
+	}
+	defaults, ok := chrobinson.PickupDefaultsForLoadNumber(req.LoadNumber)
+	if !ok {
+		return
+	}
+
+	emptyLocationBlank := req.EmptyLocation.City == "" &&
+		req.EmptyLocation.Coordinate.Latitude == 0 &&
+		req.EmptyLocation.Coordinate.Longitude == 0
+	if emptyLocationBlank {
+		o := defaults.Origin
+		req.EmptyLocation = chrobinson.BookingLocation{
+			City:    firstNonEmptyBooking(o.City),
+			State:   firstNonEmptyBooking(o.State, o.StateCode),
+			Zip:     firstNonEmptyBooking(o.Zip, o.PostalCode),
+			Country: firstNonEmptyBooking(o.Country, o.CountryCode),
+			County:  o.County,
+			Coordinate: chrobinson.BookingCoordinate{
+				Latitude:  o.Coordinate.Lat,
+				Longitude: o.Coordinate.Lon,
+			},
+		}
+	}
+
+	if strings.TrimSpace(req.EmptyDateTime) == "" && defaults.PickupDateTime != "" {
+		req.EmptyDateTime = defaults.PickupDateTime
+	}
+
+	if strings.TrimSpace(req.RateConfirmation.Name) == "" {
+		req.RateConfirmation.Name = firstNonEmptyBooking(
+			config.GetEnv("BOOKING_RATECON_NAME", ""), "HField Dispatch")
+	}
+	if strings.TrimSpace(req.RateConfirmation.Email) == "" {
+		req.RateConfirmation.Email = firstNonEmptyBooking(
+			config.GetEnv("BOOKING_RATECON_EMAIL", ""), "dispatch@hfield.net")
 	}
 }

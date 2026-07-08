@@ -349,6 +349,9 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 				if shipment.LoadNumber > 0 && len(shipment.AvailableLoadCosts) > 0 {
 					chrobinson.CacheAvailableLoadCosts(shipment.LoadNumber, shipment.AvailableLoadCosts)
 				}
+				if shipment.LoadNumber > 0 {
+					chrobinson.CachePickupDefaults(shipment.LoadNumber, shipment.Origin, firstNonEmpty(shipment.CalculatedPickUpByDateTime, shipment.PickUpByDate, shipment.ReadyBy))
+				}
 				if shipment.LoadNumber == 0 {
 					zeroLoadNumber++
 				}
@@ -959,6 +962,9 @@ func SearchAndPostLocation(client *chrobinson.APIClient, lat, lng float64) (int,
 			if shipment.LoadNumber > 0 && len(shipment.AvailableLoadCosts) > 0 {
 				// Cache costs so a later booking can reconstruct the CHRob cost shape.
 				chrobinson.CacheAvailableLoadCosts(shipment.LoadNumber, shipment.AvailableLoadCosts)
+			}
+			if shipment.LoadNumber > 0 {
+				chrobinson.CachePickupDefaults(shipment.LoadNumber, shipment.Origin, firstNonEmpty(shipment.CalculatedPickUpByDateTime, shipment.PickUpByDate, shipment.ReadyBy))
 			}
 			found++
 			orders = append(orders, mapShipmentToLoaderOrder(shipment))
