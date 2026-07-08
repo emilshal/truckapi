@@ -131,6 +131,21 @@ func (s *runtimeTrackingStore) listBookings() []chrobinson.LoadBookingRecord {
 	return out
 }
 
+// orderBidIDForLoad returns the order_bid_id captured at booking time for a
+// load number, so a later shipment-details callback can be tied back to the
+// Loader's originating bid row. Bookings are newest-first, so the first match
+// is the most recent booking for that load. Returns (0, false) if none.
+func (s *runtimeTrackingStore) orderBidIDForLoad(loadNumber int) (int, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, b := range s.bookings {
+		if b.LoadNumber == loadNumber && b.OrderBidID > 0 {
+			return b.OrderBidID, true
+		}
+	}
+	return 0, false
+}
+
 func (s *runtimeTrackingStore) addShipmentDetails(record chrobinson.ShipmentDetailsRecord) chrobinson.ShipmentDetailsRecord {
 	s.mu.Lock()
 	defer s.mu.Unlock()

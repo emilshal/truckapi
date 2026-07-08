@@ -904,3 +904,82 @@ func topCounts(m map[string]int, n int) []kv {
 	}
 	return items
 }
+
+// SearchAndPostLocation runs a one-shot search around a single coordinate and
+// posts the results to the Loader using the exact same mapping and post pool as
+// the normal runner cycle. It exists so operators can push a specific region's
+// loads (e.g. the sandbox QA test loads, whose origin is far from any real
+// truck location) to the Loader on demand, producing a payload byte-identical
+// to what the runner would send. It does NOT touch the runner's dedupe caches,
+// so it can be re-run freely for testing. Returns (found, posted, error).
+func SearchAndPostLocation(client *chrobinson.APIClient, lat, lng float64) (int, int, error) {
+	radius := envInt("CHROB_SEARCH_RADIUS_MILES", 250)
+	fromDate := time.Now().Format("2006-01-02")
+	toDate := time.Now().AddDate(0, 0, 10).Format("2006-01-02")
+
+	loaderClient := loader.NewAPIClientFromEnv(nil)
+	postPool := loader.PostPool{Client: loaderClient}
+
+	orders := make([]loader.LoaderOrder, 0, 128)
+	found := 0
+
+	const maxPages = 50
+	for pageIndex := 0; pageIndex < maxPages; pageIndex++ {
+		searchRequest := chrobinson.AvailableShipmentSearchRequest{
+			PageIndex:   pageIndex,
+			PageSize:    100,
+			RegionCode:  "NA",
+			CarrierCode: config.GetEnv(config.CHRobCarrierCode, ""),
+			Modes:       []string{"F", "L", "R", "V", "H"},
+			OriginRadiusSearch: &chrobinson.RadiusSearch{
+				Coordinate: chrobinson.Coordinate{Lat: lat, Lon: lng},
+				Radius:     chrobinson.Radius{Value: radius, UnitOfMeasure: "Standard"},
+			},
+			AvailableForPickUpByDateRange: &chrobinson.DateRange{Min: fromDate, Max: toDate},
+			SortCriteria:                  &chrobinson.SortCriteria{Field: "LoadNumber", Direction: "ascending"},
+		}
+
+		var searchResponse *chrobinson.AvailableShipmentSearchResponse
+		err := chrobinson.HandleAPICall(client, func() error {
+			resp, err := client.SearchAvailableShipments(searchRequest)
+			if err != nil {
+				return err
+			}
+			searchResponse = resp
+			return nil
+		})
+		if err != nil {
+			return found, 0, fmt.Errorf("search failed on page %d: %w", pageIndex, err)
+		}
+		if searchResponse == nil || len(searchResponse.Results) == 0 {
+			break
+		}
+
+		for _, shipment := range searchResponse.Results {
+			if shipment.LoadNumber > 0 && len(shipment.AvailableLoadCosts) > 0 {
+				// Cache costs so a later booking can reconstruct the CHRob cost shape.
+				chrobinson.CacheAvailableLoadCosts(shipment.LoadNumber, shipment.AvailableLoadCosts)
+			}
+			found++
+			orders = append(orders, mapShipmentToLoaderOrder(shipment))
+		}
+	}
+
+	if len(orders) == 0 {
+		return found, 0, nil
+	}
+
+	results := postPool.PostAllDetailed(context.Background(), orders)
+	posted := 0
+	for _, r := range results {
+		if r.Err == nil {
+			posted++
+		} else {
+			log.WithError(r.Err).WithField("orderIndex", r.Index).Warn("Manual location post failed")
+		}
+	}
+	log.WithFields(log.Fields{
+		"lat": lat, "lng": lng, "found": found, "posted": posted,
+	}).Info("Manual SearchAndPostLocation complete")
+	return found, posted, nil
+}

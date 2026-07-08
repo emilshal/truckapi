@@ -1,7 +1,10 @@
 package routes
 
 import (
+	"strconv"
+
 	"truckapi/internal/chrobinson"
+	"truckapi/internal/chrobrunner"
 	"truckapi/internal/handlers"
 	"truckapi/internal/middlewares"
 	"truckapi/internal/uifeed"
@@ -81,6 +84,29 @@ func InitializeRoutes(apiClient *chrobinson.APIClient, feed *uifeed.Store) *fibe
 	fiberApp.Get("/debug/mock-loader/summary", handlers.MockLoaderSummaryHandler())
 	fiberApp.Get("/debug/mock-loader/orders", handlers.MockLoaderListHandler())
 	fiberApp.Post("/debug/mock-loader/reset", handlers.MockLoaderResetHandler())
+
+	// Debug: run a one-shot search around a coordinate and post the results to
+	// the Loader using the normal runner pipeline. Used to push loads whose
+	// origin is outside any real truck location (e.g. sandbox QA test loads).
+	// Example: POST /debug/search-post?lat=32.715&lng=-117.1573
+	fiberApp.Post("/debug/search-post", func(c *fiber.Ctx) error {
+		lat, errLat := strconv.ParseFloat(c.Query("lat"), 64)
+		lng, errLng := strconv.ParseFloat(c.Query("lng"), 64)
+		if errLat != nil || errLng != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": "lat and lng query params are required and must be numeric",
+			})
+		}
+		found, posted, err := chrobrunner.SearchAndPostLocation(apiClient, lat, lng)
+		if err != nil {
+			return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{
+				"error": err.Error(), "found": found, "posted": posted,
+			})
+		}
+		return c.Status(fiber.StatusOK).JSON(fiber.Map{
+			"found": found, "posted": posted, "lat": lat, "lng": lng,
+		})
+	})
 
 	// Health check endpoint
 	fiberApp.Get("/health", func(c *fiber.Ctx) error {

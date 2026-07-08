@@ -153,6 +153,7 @@ type LoadBookingRecord struct {
 	ID                    uint      `gorm:"primaryKey" json:"id"`
 	LoadNumber            int       `gorm:"index" json:"loadNumber"`
 	CarrierCode           string    `gorm:"index" json:"carrierCode"`
+	OrderBidID            int       `gorm:"index" json:"orderBidId,omitempty"`
 	Status                string    `gorm:"index" json:"status"`
 	EmptyDateTime         string    `json:"emptyDateTime"`
 	RateConfirmationName  string    `json:"rateConfirmationName"`

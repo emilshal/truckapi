@@ -317,6 +317,113 @@ func TestBookLoadHandler_TracksBookingRecordInMemory(t *testing.T) {
 	}
 }
 
+func TestBookLoadHandler_AcceptsTNumberAliases(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"snake t_number", `{"loadNumber":546698145,"t_number":"T777","emptyDateTime":"2026-03-13T15:00:00Z","emptyLocation":{"city":"KC","state":"MO","country":"US","zip":"64155"},"availableLoadCosts":[{"type":"LINEHAUL","code":"BIN","description":"BIN","sourceCostPerUnit":2100,"units":1,"currencyCode":"USD"}],"rateConfirmation":{"email":"o@e.com","name":"O"}}`},
+		{"camel tNumber", `{"loadNumber":546698145,"tNumber":"T777","emptyDateTime":"2026-03-13T15:00:00Z","emptyLocation":{"city":"KC","state":"MO","country":"US","zip":"64155"},"availableLoadCosts":[{"type":"LINEHAUL","code":"BIN","description":"BIN","sourceCostPerUnit":2100,"units":1,"currencyCode":"USD"}],"rateConfirmation":{"email":"o@e.com","name":"O"}}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			setupOfferResponseDB(t)
+
+			var upstream chrobinson.LoadBookingRequest
+			client, _ := newTestCHRobAPIClient(t, func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewDecoder(r.Body).Decode(&upstream)
+				w.WriteHeader(http.StatusAccepted)
+			})
+
+			app := newOfferTestApp(client)
+			req := httptest.NewRequest(http.MethodPost, "/v1/shipments/books", bytes.NewBufferString(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+
+			resp, err := app.Test(req, 5000)
+			if err != nil {
+				t.Fatalf("app.Test: %v", err)
+			}
+			if resp.StatusCode != fiber.StatusAccepted {
+				t.Fatalf("expected 202, got %d", resp.StatusCode)
+			}
+			if upstream.CarrierCode != "T777" {
+				t.Fatalf("expected forwarded carrierCode=T777, got %q", upstream.CarrierCode)
+			}
+
+			var ack map[string]any
+			if err := json.NewDecoder(resp.Body).Decode(&ack); err != nil {
+				t.Fatalf("decode ack: %v", err)
+			}
+			if ack["t_number"] != "T777" {
+				t.Fatalf("expected ack to echo t_number=T777, got %v", ack["t_number"])
+			}
+		})
+	}
+}
+
+func TestBookLoadHandler_AcceptsSnakeCaseLoadNumberAndOrderBidID(t *testing.T) {
+	setupOfferResponseDB(t)
+
+	var upstream chrobinson.LoadBookingRequest
+	client, _ := newTestCHRobAPIClient(t, func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&upstream)
+		w.WriteHeader(http.StatusAccepted)
+	})
+
+	app := newOfferTestApp(client)
+	// Colleague's exact shape: load_number + t_number + order_bid_id (snake).
+	body := `{"load_number":546698145,"t_number":"T777","order_bid_id":998877,"emptyDateTime":"2026-03-13T15:00:00Z","emptyLocation":{"city":"KC","state":"MO","country":"US","zip":"64155"},"availableLoadCosts":[{"type":"LINEHAUL","code":"BIN","description":"BIN","sourceCostPerUnit":2100,"units":1,"currencyCode":"USD"}],"rateConfirmation":{"email":"o@e.com","name":"O"}}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/shipments/books", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := app.Test(req, 5000)
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusAccepted {
+		t.Fatalf("expected 202, got %d", resp.StatusCode)
+	}
+	if upstream.LoadNumber != 546698145 {
+		t.Fatalf("expected forwarded loadNumber=546698145, got %d", upstream.LoadNumber)
+	}
+	if upstream.CarrierCode != "T777" {
+		t.Fatalf("expected forwarded carrierCode=T777, got %q", upstream.CarrierCode)
+	}
+
+	var ack map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&ack); err != nil {
+		t.Fatalf("decode ack: %v", err)
+	}
+	if ack["order_bid_id"] != float64(998877) {
+		t.Fatalf("expected ack to echo order_bid_id=998877, got %v", ack["order_bid_id"])
+	}
+
+	records := runtimeStore.listBookings()
+	if len(records) != 1 || records[0].OrderBidID != 998877 {
+		t.Fatalf("expected booking record with OrderBidID=998877, got %+v", records)
+	}
+}
+
+func TestBookLoadHandler_RejectsMismatchedTNumberAliases(t *testing.T) {
+	setupOfferResponseDB(t)
+	client, _ := newTestCHRobAPIClient(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("upstream must not be called when aliases mismatch")
+	})
+
+	app := newOfferTestApp(client)
+	req := httptest.NewRequest(http.MethodPost, "/v1/shipments/books", bytes.NewBufferString(
+		`{"loadNumber":546698145,"t_number":"T777","carrierCode":"T999","availableLoadCosts":[{"type":"LINEHAUL","code":"BIN","description":"BIN","sourceCostPerUnit":2100,"units":1,"currencyCode":"USD"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := app.Test(req, 5000)
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", resp.StatusCode)
+	}
+}
+
 func TestShipmentDetailsHandler_FetchEndpoint(t *testing.T) {
 	setupOfferResponseDB(t)
 	app := newOfferTestApp(nil)
@@ -567,6 +674,90 @@ func TestShipmentDetailsHandler_TracksCallbackInMemory(t *testing.T) {
 	}
 	if !strings.Contains(record.RawPayload, `"loadNumber":"546698145"`) {
 		t.Fatalf("expected raw payload to be stored, got %q", record.RawPayload)
+	}
+}
+
+func TestShipmentDetailsHandler_ForwardsToLoaderWithOrderBidID(t *testing.T) {
+	setupOfferResponseDB(t)
+
+	var received loader.ShipmentDetailsForward
+	loaderSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/loader/chrobinson/book/response" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if r.Header.Get("X-API-KEY") != "test-loader-key" {
+			t.Fatalf("unexpected X-API-KEY: %q", r.Header.Get("X-API-KEY"))
+		}
+		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+			t.Fatalf("decode forward: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer loaderSrv.Close()
+
+	t.Setenv("LOADER_API_BASE_URL", loaderSrv.URL)
+	t.Setenv("LOADER_API_KEY", "test-loader-key")
+
+	// Seed the booking so the shipment-details callback can find its order_bid_id.
+	runtimeStore.addBooking(chrobinson.LoadBookingRecord{
+		LoadNumber:  546698145,
+		CarrierCode: "T6263835",
+		OrderBidID:  424242,
+		Status:      "accepted",
+	})
+
+	app := fiber.New()
+	app.Post("/shipmentDetails/callback/here", ShipmentDetailsHandler)
+
+	body := `{"time":"2026-03-11","carrierCode":"T6263835","loadNumber":"546698145","event":{"eventType":"LOAD DETAIL CHANGED","eventSubType":"Shipment Booked","loadNumber":"546698145","mode":"V"}}`
+	req := httptest.NewRequest(http.MethodPost, "/shipmentDetails/callback/here", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := app.Test(req, 5000)
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	if received.OrderBidID != 424242 {
+		t.Fatalf("expected forwarded order_bid_id=424242, got %d", received.OrderBidID)
+	}
+	if received.LoadNumber != "546698145" {
+		t.Fatalf("expected forwarded load_number=546698145, got %q", received.LoadNumber)
+	}
+	// The entire raw CHRob callback must be forwarded verbatim.
+	if !strings.Contains(string(received.Callback), `"eventSubType":"Shipment Booked"`) {
+		t.Fatalf("expected raw callback forwarded, got %s", string(received.Callback))
+	}
+}
+
+func TestShipmentDetailsHandler_NoForwardWithoutBooking(t *testing.T) {
+	setupOfferResponseDB(t)
+
+	loaderSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("Loader must not be called when there is no matching booking")
+	}))
+	defer loaderSrv.Close()
+	t.Setenv("LOADER_API_BASE_URL", loaderSrv.URL)
+	t.Setenv("LOADER_API_KEY", "test-loader-key")
+
+	app := fiber.New()
+	app.Post("/shipmentDetails/callback/here", ShipmentDetailsHandler)
+
+	// No booking seeded → no order_bid_id → must skip forward but still 200.
+	body := `{"carrierCode":"T6263835","loadNumber":"999000111","event":{"eventType":"LOAD DETAIL CHANGED","eventSubType":"Shipment Booked","loadNumber":"999000111"}}`
+	req := httptest.NewRequest(http.MethodPost, "/shipmentDetails/callback/here", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := app.Test(req, 5000)
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected 200 even without forward, got %d", resp.StatusCode)
 	}
 }
 

@@ -180,6 +180,63 @@ func BookLoadHandler(apiClient *chrobinson.APIClient) fiber.Handler {
 			})
 		}
 
+		// The Loader colleague sends snake_case aliases (t_number, load_number,
+		// order_bid_id) that the native LoadBookingRequest struct doesn't
+		// recognize. Parse them from the raw body and reconcile:
+		//   - carrier: t_number / tNumber / carrierCode (must agree if >1 given)
+		//   - loadNumber: load_number / loadNumber (accepts string or int)
+		//   - order_bid_id: captured so the booking record can carry it for the
+		//     eventual forward back to Loader.
+		var bookAliases struct {
+			TNumber         string      `json:"t_number"`
+			TNumberCamel    string      `json:"tNumber"`
+			CarrierCode     string      `json:"carrierCode"`
+			LoadNumberSnake json.Number `json:"load_number"`
+			LoadNumberCamel json.Number `json:"loadNumber"`
+			OrderBidID      *int        `json:"order_bid_id"`
+			OrderBidIDCamel *int        `json:"orderBidId"`
+		}
+		_ = json.Unmarshal(c.Body(), &bookAliases)
+
+		resolvedCarrier, aliasErr := resolveCarrierAliases(bookAliases.TNumber, bookAliases.TNumberCamel, bookAliases.CarrierCode)
+		if aliasErr != nil {
+			if fe, ok := aliasErr.(*fiber.Error); ok {
+				return c.Status(fe.Code).JSON(fiber.Map{"error": fe.Message})
+			}
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid carrier identifier"})
+		}
+		if resolvedCarrier != "" {
+			bookingRequest.CarrierCode = resolvedCarrier
+		}
+
+		// Reconcile the load number from the snake_case alias when the native
+		// camelCase field didn't populate it (handles string-encoded values too).
+		if bookingRequest.LoadNumber == 0 {
+			for _, raw := range []json.Number{bookAliases.LoadNumberSnake, bookAliases.LoadNumberCamel} {
+				if raw == "" {
+					continue
+				}
+				if n, convErr := strconv.Atoi(raw.String()); convErr == nil && n > 0 {
+					bookingRequest.LoadNumber = n
+					break
+				}
+			}
+		}
+
+		// Capture the Loader's bid row id (snake or camel) for the booking record.
+		orderBidID := 0
+		if bookAliases.OrderBidID != nil {
+			orderBidID = *bookAliases.OrderBidID
+		}
+		if bookAliases.OrderBidIDCamel != nil {
+			if orderBidID != 0 && orderBidID != *bookAliases.OrderBidIDCamel {
+				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+					"error": "order_bid_id and orderBidId must match when both are provided",
+				})
+			}
+			orderBidID = *bookAliases.OrderBidIDCamel
+		}
+
 		if bookingRequest.CarrierCode == "" {
 			bookingRequest.CarrierCode = config.GetEnv(config.CHRobCarrierCode, "")
 		}
@@ -238,6 +295,7 @@ func BookLoadHandler(apiClient *chrobinson.APIClient) fiber.Handler {
 			runtimeStore.addBooking(chrobinson.LoadBookingRecord{
 				LoadNumber:            bookingRequest.LoadNumber,
 				CarrierCode:           bookingRequest.CarrierCode,
+				OrderBidID:            orderBidID,
 				Status:                "accepted",
 				EmptyDateTime:         bookingRequest.EmptyDateTime,
 				RateConfirmationName:  bookingRequest.RateConfirmation.Name,
@@ -248,15 +306,20 @@ func BookLoadHandler(apiClient *chrobinson.APIClient) fiber.Handler {
 		}
 
 		// If everything was successful, return an appropriate response
-		return c.Status(fiber.StatusAccepted).JSON(fiber.Map{
+		response := fiber.Map{
 			"message":                 "Load booked successfully",
 			"loadNumber":              bookingRequest.LoadNumber,
 			"carrierCode":             bookingRequest.CarrierCode,
+			"t_number":                bookingRequest.CarrierCode,
 			"status":                  "accepted",
 			"persisted":               false,
 			"awaitingShipmentDetails": true,
 			"trackingMode":            "memory",
-		})
+		}
+		if orderBidID > 0 {
+			response["order_bid_id"] = orderBidID
+		}
+		return c.Status(fiber.StatusAccepted).JSON(response)
 	}
 }
 
@@ -460,6 +523,32 @@ func ShipmentDetailsHandler(c *fiber.Ctx) error {
 		ActivityDate: shipmentDetails.Event.ActivityDate,
 		RawPayload:   string(rawBody),
 	})
+
+	// Forward the raw callback to the Loader, tagged with the order_bid_id we
+	// captured when this load was booked, so the colleague can attach shipment
+	// details to the originating bid row. If we have no matching booking (e.g.
+	// the load was booked outside this process or before a restart), we skip the
+	// forward rather than fail the callback — CHRob still gets its 200.
+	if loadNum, convErr := strconv.Atoi(shipmentDetails.LoadNumber.String()); convErr == nil {
+		if orderBidID, ok := runtimeStore.orderBidIDForLoad(loadNum); ok {
+			loaderClient := loader.NewCoreAPIClientFromEnv(nil)
+			fwdErr := loaderClient.CreateShipmentDetailsForward(loader.ShipmentDetailsForward{
+				OrderBidID: orderBidID,
+				LoadNumber: shipmentDetails.LoadNumber.String(),
+				TNumber:    shipmentDetails.CarrierCode,
+				Callback:   json.RawMessage(rawBody),
+			})
+			if fwdErr != nil {
+				logrus.WithError(fwdErr).WithFields(logrus.Fields{
+					"loadNumber": shipmentDetails.LoadNumber.String(),
+					"orderBidId": orderBidID,
+				}).Error("Failed to forward shipment details to Loader API")
+			}
+		} else {
+			logrus.WithField("loadNumber", shipmentDetails.LoadNumber.String()).
+				Info("Shipment details received with no stored order_bid_id; not forwarded to Loader")
+		}
+	}
 
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{"status": "ok"})
 }

@@ -217,6 +217,84 @@ func (client *APIClient) CreateBrokerResponse(response BrokerResponse) error {
 	return nil
 }
 
+// ShipmentDetailsForward is what we POST to the Loader after CHRob sends us a
+// shipment-details callback for a booked load. It carries the Loader's original
+// order_bid_id plus the entire raw CHRob callback payload verbatim, so the
+// Loader can tie the shipment details back to the bid row without us lossily
+// re-mapping CHRob's schema.
+type ShipmentDetailsForward struct {
+	OrderBidID int             `json:"order_bid_id"`
+	LoadNumber string          `json:"load_number,omitempty"`
+	TNumber    string          `json:"t_number,omitempty"`
+	Callback   json.RawMessage `json:"callback"`
+}
+
+// shipmentDetailsForwardPath is where the Loader receives forwarded
+// shipment-details callbacks. Overridable via LOADER_SHIPMENT_DETAILS_PATH so
+// the endpoint can be set once the colleague confirms it.
+func shipmentDetailsForwardPath() string {
+	if p := strings.TrimSpace(config.GetEnv("LOADER_SHIPMENT_DETAILS_PATH", "")); p != "" {
+		return p
+	}
+	return "/api/v1/loader/chrobinson/book/response"
+}
+
+// CreateShipmentDetailsForward POSTs the raw CHRob shipment-details callback to
+// the Loader, tagged with the order_bid_id captured at booking time.
+func (client *APIClient) CreateShipmentDetailsForward(forward ShipmentDetailsForward) error {
+	if client == nil {
+		return fmt.Errorf("loader client is nil")
+	}
+	if client.BaseURL == "" {
+		return fmt.Errorf("loader base url is empty")
+	}
+	if strings.TrimSpace(client.APIKey) == "" {
+		return fmt.Errorf("loader api key is empty")
+	}
+	if forward.OrderBidID <= 0 {
+		return fmt.Errorf("order_bid_id must be greater than 0")
+	}
+	if len(forward.Callback) == 0 {
+		return fmt.Errorf("callback payload is required")
+	}
+
+	payload, err := json.Marshal(forward)
+	if err != nil {
+		return fmt.Errorf("marshal loader shipment details forward: %w", err)
+	}
+
+	url := client.BaseURL + shipmentDetailsForwardPath()
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("build loader shipment details request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-KEY", client.APIKey)
+
+	resp, err := client.HTTPClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("loader shipment details request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusAccepted {
+		return &APIError{StatusCode: resp.StatusCode, Body: string(body)}
+	}
+	if loader2xxBodyExplicitFailure(body) {
+		return &APIError{StatusCode: resp.StatusCode, Body: string(body)}
+	}
+
+	log.WithFields(log.Fields{
+		"order_bid_id": forward.OrderBidID,
+		"load_number":  forward.LoadNumber,
+		"status_code":  resp.StatusCode,
+		"loaderApiUrl": url,
+	}).Info("Forwarded shipment details to Loader API")
+
+	return nil
+}
+
 type PostPool struct {
 	Client     *APIClient
 	Workers    int
