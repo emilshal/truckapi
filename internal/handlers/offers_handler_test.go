@@ -921,3 +921,57 @@ func TestBookLoadHandler_UsesCachedAvailableLoadCosts(t *testing.T) {
 		t.Fatalf("expected cached currencyCode=USD, got %q", cost.CurrencyCode)
 	}
 }
+
+// The accepted bid price must be what we book at — not the load's original
+// posted rate. Here the load was posted at $1500 but our bid of $2200 was
+// accepted; the booking to CHRob must carry $2200.
+func TestBookLoadHandler_BooksAtAcceptedPriceNotPostedPrice(t *testing.T) {
+	setupOfferResponseDB(t)
+
+	var upstream chrobinson.LoadBookingRequest
+	client, _ := newTestCHRobAPIClient(t, func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&upstream)
+		w.WriteHeader(http.StatusAccepted)
+	})
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	// Accepted offer at our bid price of 2200.
+	runtimeStore.upsertOffer(chrobinson.OfferResponse{
+		LoadNumber:   202299777,
+		CarrierCode:  "T6323830",
+		OfferResult:  "Accepted",
+		Price:        2200,
+		CurrencyCode: "USD",
+		Status:       "booked",
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	})
+	// Cached cost reflects the ORIGINAL posted rate of 1500.
+	chrobinson.CacheAvailableLoadCosts(202299777, []chrobinson.AvailableLoadCost{{
+		Type: "Flat", Code: "400", Description: "Line Haul",
+		SourceCostPerUnit: 1500, Units: 1, CurrencyCode: "USD",
+	}})
+
+	app := newOfferTestApp(client)
+	req := httptest.NewRequest(http.MethodPost, "/v1/shipments/books", bytes.NewBufferString(`{"loadNumber":202299777,"carrierCode":"T6323830"}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := app.Test(req, 5000)
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusAccepted {
+		t.Fatalf("expected 202, got %d", resp.StatusCode)
+	}
+	if len(upstream.AvailableLoadCosts) != 1 {
+		t.Fatalf("expected 1 cost, got %d", len(upstream.AvailableLoadCosts))
+	}
+	cost := upstream.AvailableLoadCosts[0]
+	if cost.SourceCostPerUnit != 2200 {
+		t.Fatalf("expected booking at accepted price 2200, got %v (posted was 1500)", cost.SourceCostPerUnit)
+	}
+	// Cost shape must still be preserved so CHRob's schema validates.
+	if cost.Code != "400" || cost.Description != "Line Haul" || cost.Units != 1 {
+		t.Fatalf("expected cost shape preserved, got %+v", cost)
+	}
+}

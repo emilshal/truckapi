@@ -760,12 +760,21 @@ func populateBookingRequestFromOffer(bookingRequest *chrobinson.LoadBookingReque
 	// this load. If there's no such offer (e.g. a direct book without bidding
 	// first, or the offer was lost on restart), fall back to the search cost
 	// cache — costs are cached for every load we search, independent of offers.
+	var agreedPrice int
+	haveAgreedPrice := false
 	if offer, ok := runtimeStore.latestOfferByLoadNumber(bookingRequest.LoadNumber); ok {
 		if bookingRequest.CarrierCode == "" && offer.CarrierCode != "" {
 			bookingRequest.CarrierCode = offer.CarrierCode
 		}
 		if offer.Status != "booked" && offer.Status != "countered" {
 			return fmt.Errorf("cannot derive booking cost for loadNumber %d without an accepted or countered offer response", bookingRequest.LoadNumber)
+		}
+		// The accepted/countered offer carries the price CHRob agreed to — book
+		// at THAT price, not the load's original posted rate. Without this the
+		// booking would send back CHRob's original cost and ignore our bid.
+		if offer.Price > 0 {
+			agreedPrice = offer.Price
+			haveAgreedPrice = true
 		}
 	}
 
@@ -774,15 +783,47 @@ func populateBookingRequestFromOffer(bookingRequest *chrobinson.LoadBookingReque
 		return fmt.Errorf("no cached availableLoadCosts found for loadNumber %d; provide availableLoadCosts in the request or retry after the load has been searched/ingested", bookingRequest.LoadNumber)
 	}
 
+	// Overlay the agreed price onto the cached cost shape: keep CHRob's cost
+	// type/code/description (so the booking schema validates) but set the
+	// per-unit cost to the accepted bid. Applied to the primary line-haul cost.
+	if haveAgreedPrice {
+		loadCosts = overlayAgreedPrice(loadCosts, agreedPrice)
+	}
+
 	bookingRequest.AvailableLoadCosts = loadCosts
 
 	log.WithFields(log.Fields{
 		"loadNumber":  bookingRequest.LoadNumber,
 		"carrierCode": bookingRequest.CarrierCode,
 		"costCount":   len(loadCosts),
-	}).Info("Derived booking availableLoadCosts from cached CHRob shipment data")
+		"agreedPrice": agreedPrice,
+		"usedAgreed":  haveAgreedPrice,
+	}).Info("Derived booking availableLoadCosts")
 
 	return nil
+}
+
+// overlayAgreedPrice returns a copy of the cached costs with the agreed price
+// applied. It sets the "Line Haul" cost (code 400) to the agreed amount at 1
+// unit; if no line-haul line exists it overrides the first cost. Other cost
+// lines (accessorials, fuel, etc.) are left untouched.
+func overlayAgreedPrice(costs []chrobinson.LoadCost, agreedPrice int) []chrobinson.LoadCost {
+	out := make([]chrobinson.LoadCost, len(costs))
+	copy(out, costs)
+
+	targetIdx := -1
+	for i, c := range out {
+		if c.Code == "400" || strings.EqualFold(c.Description, "Line Haul") {
+			targetIdx = i
+			break
+		}
+	}
+	if targetIdx == -1 {
+		targetIdx = 0
+	}
+	out[targetIdx].SourceCostPerUnit = float64(agreedPrice)
+	out[targetIdx].Units = 1
+	return out
 }
 
 // DocumentUploadHandler handles uploading documents to C.H. Robinson.
