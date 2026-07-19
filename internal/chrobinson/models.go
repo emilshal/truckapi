@@ -415,9 +415,9 @@ type ShipmentIdentifier struct {
 
 // DateTime contains the different types of dates that can apply to a milestone.
 type DateTime struct {
-	EventDateTime          string            `json:"eventDateTime,omitempty"`
-	EstimatedTimeOfArrival string            `json:"estimatedTimeOfArrival,omitempty"`
-	AppointmentWindow      AppointmentWindow `json:"appointmentWindow,omitempty"`
+	EventDateTime          string             `json:"eventDateTime,omitempty"`
+	EstimatedTimeOfArrival string             `json:"estimatedTimeOfArrival,omitempty"`
+	AppointmentWindow      *AppointmentWindow `json:"appointmentWindow,omitempty"`
 }
 
 // AppointmentWindow represents the open and close date and time for an appointment.
@@ -495,7 +495,10 @@ type SupplementalInformation struct {
 }
 
 // MilestoneUpdate represents the JSON object for a milestone update.
+// location.type must be one of CHRob's enum values (verified against sandbox):
+// P, OA, OP, OR, OT, D, DA, DP, DR, DT, IA, IP, IR, X, OF, OC, DF, DC, DY.
 type MilestoneUpdate struct {
+	TransitType             string                   `json:"transitType,omitempty"`             // Optional: Road|Ocean|Rail|Air
 	EventCode               string                   `json:"eventCode"`                         // Required
 	ShipmentIdentifier      ShipmentIdentifier       `json:"shipmentIdentifier"`                // Required
 	DateTime                DateTime                 `json:"dateTime"`                          // Required

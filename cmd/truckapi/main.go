@@ -9,6 +9,7 @@ import (
 	"truckapi/internal/auth"
 	"truckapi/internal/chrobinson"
 	"truckapi/internal/chrobrunner"
+	"truckapi/internal/handlers"
 	"truckapi/internal/httpdebug"
 	"truckapi/internal/routes"
 	"truckapi/internal/truckstop"
@@ -73,9 +74,6 @@ func main() {
 		log.Fatalf("Failed to save environment variables: %v", err)
 	}
 
-	// Start the periodic milestone updater
-	// chrobinson.StartMilestoneUpdater(apiClient)
-
 	// Platform MySQL is optional and independent from the in-memory CHRob runtime tracking.
 	enableDatabases := envTruthy(config.EnableDatabases, false)
 	enablePlatformDB := envTruthy(config.EnablePlatformDB, enableDatabases)
@@ -83,6 +81,17 @@ func main() {
 		err = db.InitializePlatformDatabase()
 		if err != nil {
 			log.Fatalf("Failed to initialize platform database: %v", err)
+		}
+	}
+
+	// Geofence-based milestone tracker: infers shipment lifecycle events for
+	// booked loads from truck GPS and pushes them to CHRob. Needs the platform
+	// DB for truck positions.
+	if envTruthy("ENABLE_MILESTONES", false) {
+		if enablePlatformDB {
+			handlers.StartMilestoneTracker(apiClient)
+		} else {
+			log.Warn("ENABLE_MILESTONES is set but ENABLE_PLATFORM_DB is off; milestone tracker not started")
 		}
 	}
 

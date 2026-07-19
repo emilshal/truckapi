@@ -612,3 +612,40 @@ func FetchLoaderLocations(source string) ([]chrobinson.LoaderLocation, error) {
 
 	return locationsResp.Data, nil
 }
+
+// TruckPosition is the live position and identity of the truck assigned to an
+// order bid, resolved from the platform DB (order_bids -> trucks -> latest
+// pseudo_locations row), plus the Loader order number for durable
+// order_bid_id <-> load mapping.
+type TruckPosition struct {
+	OrderBidID  int
+	OrderNumber string
+	DriverName  string
+	Lat         float64
+	Lng         float64
+	Address     string
+	UpdatedAt   time.Time
+}
+
+// TruckPositionByOrderBidID resolves an order_bid_id to its truck's most
+// recent GPS fix. Requires the platform DB (ENABLE_PLATFORM_DB=true).
+func TruckPositionByOrderBidID(orderBidID int) (*TruckPosition, error) {
+	if PlatformDB == nil {
+		return nil, fmt.Errorf("platform database is not initialized (set ENABLE_PLATFORM_DB=true)")
+	}
+	row := PlatformDB.Raw(`
+		SELECT ob.id, o.order_number, COALESCE(ob.driver_name, ''), p.lat, p.lng, COALESCE(p.address, ''), p.updated_at
+		FROM order_bids ob
+		JOIN orders o ON o.id = ob.order_id
+		JOIN pseudo_locations p ON p.truck_id = ob.truck_id
+		WHERE ob.id = ?
+		ORDER BY p.updated_at DESC
+		LIMIT 1
+	`, orderBidID).Row()
+
+	tp := &TruckPosition{}
+	if err := row.Scan(&tp.OrderBidID, &tp.OrderNumber, &tp.DriverName, &tp.Lat, &tp.Lng, &tp.Address, &tp.UpdatedAt); err != nil {
+		return nil, fmt.Errorf("truck position lookup for order_bid_id %d: %w", orderBidID, err)
+	}
+	return tp, nil
+}
