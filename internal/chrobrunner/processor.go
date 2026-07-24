@@ -16,7 +16,6 @@ import (
 	"truckapi/internal/chrobinson"
 	"truckapi/internal/loader"
 	"truckapi/internal/uifeed"
-	"truckapi/pkg/config"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -247,12 +246,13 @@ func ChrobSearchProcess(client *chrobinson.APIClient, feed *uifeed.Store) error 
 		fromDate := time.Now().Format("2006-01-02")
 		toDate := time.Now().AddDate(0, 0, 10).Format("2006-01-02")
 
+		// Carrier-agnostic search: results and prices are identical without a
+		// carrierCode; the carrier enters only at offer/book time via t_number.
 		baseRequest := chrobinson.AvailableShipmentSearchRequest{
-			PageIndex:   0,
-			PageSize:    100,
-			RegionCode:  "NA",
-			CarrierCode: config.GetEnv(config.CHRobCarrierCode, ""),
-			Modes:       []string{"F", "L", "R", "V", "H"},
+			PageIndex:  0,
+			PageSize:   100,
+			RegionCode: "NA",
+			Modes:      []string{"F", "L", "R", "V", "H"},
 			OriginRadiusSearch: &chrobinson.RadiusSearch{
 				Coordinate: chrobinson.Coordinate{Lat: lat, Lon: lng},
 				Radius: chrobinson.Radius{
@@ -929,11 +929,10 @@ func SearchAndPostLocation(client *chrobinson.APIClient, lat, lng float64) (int,
 	const maxPages = 50
 	for pageIndex := 0; pageIndex < maxPages; pageIndex++ {
 		searchRequest := chrobinson.AvailableShipmentSearchRequest{
-			PageIndex:   pageIndex,
-			PageSize:    100,
-			RegionCode:  "NA",
-			CarrierCode: config.GetEnv(config.CHRobCarrierCode, ""),
-			Modes:       []string{"F", "L", "R", "V", "H"},
+			PageIndex:  pageIndex,
+			PageSize:   100,
+			RegionCode: "NA",
+			Modes:      []string{"F", "L", "R", "V", "H"},
 			OriginRadiusSearch: &chrobinson.RadiusSearch{
 				Coordinate: chrobinson.Coordinate{Lat: lat, Lon: lng},
 				Radius:     chrobinson.Radius{Value: radius, UnitOfMeasure: "Standard"},

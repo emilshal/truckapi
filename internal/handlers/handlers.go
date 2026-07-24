@@ -67,9 +67,9 @@ func SearchAvailableShipmentsHandler(apiClient *chrobinson.APIClient) fiber.Hand
 
 		// After parsing the request body
 		log.Infof("Parsed search request: %+v", searchRequest)
-		if strings.TrimSpace(searchRequest.CarrierCode) == "" {
-			searchRequest.CarrierCode = config.GetEnv(config.CHRobCarrierCode, "")
-		}
+		// Searches run carrier-agnostic: results (incl. prices) are identical
+		// with or without a carrierCode; the carrier only matters at offer/book
+		// time, where it comes from the caller's t_number.
 
 		// Define a variable to hold the search response.
 		var searchResponse *chrobinson.AvailableShipmentSearchResponse
