@@ -8,6 +8,7 @@ import (
 	"time"
 	"truckapi/db"
 	"truckapi/internal/chrobinson"
+	"truckapi/internal/chrobrunner"
 	"truckapi/internal/loader"
 	"truckapi/pkg/config"
 
@@ -252,18 +253,19 @@ func BookLoadHandler(apiClient *chrobinson.APIClient) fiber.Handler {
 			})
 		}
 
-		// CHRob requires emptyLocation, emptyDateTime, and rateConfirmation. The
-		// Loader colleague sends only load/carrier/bid ids, so default the
-		// logistics fields from the load's pickup origin (a truck arriving empty
-		// at the pickup on the pickup date) when the caller omits them. Any field
-		// the caller DID send is preserved.
-		applyBookingDefaults(&bookingRequest)
-
-		if err := populateBookingRequestFromOffer(&bookingRequest); err != nil {
+		if err := populateBookingRequestFromOffer(&bookingRequest, apiClient); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 				"error": err.Error(),
 			})
 		}
+
+		// CHRob requires emptyLocation, emptyDateTime, and rateConfirmation. The
+		// Loader colleague sends only load/carrier/bid ids, so default the
+		// logistics fields from the load's pickup origin (a truck arriving empty
+		// at the pickup on the pickup date) when the caller omits them. Any field
+		// the caller DID send is preserved. Runs after cost population so a
+		// cache-miss rescue search has re-primed the pickup defaults too.
+		applyBookingDefaults(&bookingRequest)
 		if bookingRequest.CarrierCode == "" {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 				"error": "carrierCode is required",
@@ -715,7 +717,7 @@ func MarkBookedHandler(apiClient *chrobinson.APIClient) fiber.Handler {
 			})
 		}
 		if len(bookingRequest.AvailableLoadCosts) == 0 {
-			if err := populateBookingRequestFromOffer(&bookingRequest); err != nil {
+			if err := populateBookingRequestFromOffer(&bookingRequest, apiClient); err != nil {
 				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 					"error": err.Error(),
 				})
@@ -748,7 +750,7 @@ func MarkBookedHandler(apiClient *chrobinson.APIClient) fiber.Handler {
 	}
 }
 
-func populateBookingRequestFromOffer(bookingRequest *chrobinson.LoadBookingRequest) error {
+func populateBookingRequestFromOffer(bookingRequest *chrobinson.LoadBookingRequest, apiClient *chrobinson.APIClient) error {
 	if bookingRequest == nil || bookingRequest.LoadNumber == 0 {
 		return nil
 	}
@@ -779,6 +781,16 @@ func populateBookingRequestFromOffer(bookingRequest *chrobinson.LoadBookingReque
 	}
 
 	loadCosts, ok := chrobinson.BookingLoadCostsForLoadNumber(bookingRequest.LoadNumber)
+	if (!ok || len(loadCosts) == 0) && apiClient != nil {
+		// Rescue path: the load isn't in the cost cache (evicted, or the process
+		// restarted since it was searched). Re-run the runner's radius searches
+		// synchronously until the load turns up, caching costs and pickup
+		// defaults along the way, then retry the lookup.
+		log.WithField("loadNumber", bookingRequest.LoadNumber).Warn("Cost cache miss on booking; running rescue search")
+		if chrobrunner.FindAndCacheLoad(apiClient, bookingRequest.LoadNumber) {
+			loadCosts, ok = chrobinson.BookingLoadCostsForLoadNumber(bookingRequest.LoadNumber)
+		}
+	}
 	if !ok || len(loadCosts) == 0 {
 		return fmt.Errorf("no cached availableLoadCosts found for loadNumber %d; provide availableLoadCosts in the request or retry after the load has been searched/ingested", bookingRequest.LoadNumber)
 	}

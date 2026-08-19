@@ -908,6 +908,95 @@ func topCounts(m map[string]int, n int) []kv {
 	return items
 }
 
+// FindAndCacheLoad is the booking-time rescue path for cost-cache misses: it
+// sweeps the same radius searches the runner performs (every truck location
+// from the Loader API), caching costs and pickup defaults for everything it
+// sees, until the target load number turns up. It does NOT post to the Loader
+// and does NOT touch the dedupe caches — it is a pure search+cache pass.
+// Returns true once the load has been seen (its costs are then cached).
+func FindAndCacheLoad(client *chrobinson.APIClient, loadNumber int) bool {
+	locations, err := db.FetchLoaderLocations("TRUCKSTOP")
+	if err != nil {
+		log.WithError(err).WithField("loadNumber", loadNumber).Error("FindAndCacheLoad: failed to fetch locations")
+		return false
+	}
+
+	radius := envInt("CHROB_SEARCH_RADIUS_MILES", 250)
+	fromDate := time.Now().Format("2006-01-02")
+	toDate := time.Now().AddDate(0, 0, 10).Format("2006-01-02")
+
+	seenCoords := make(map[string]struct{}, len(locations))
+	for _, loc := range locations {
+		lat, latErr := parseFloatField(loc.Latitude)
+		lng, lngErr := parseFloatField(loc.Longitude)
+		if latErr != nil || lngErr != nil {
+			continue
+		}
+		coordKey := fmt.Sprintf("%.4f:%.4f", lat, lng)
+		if _, dup := seenCoords[coordKey]; dup {
+			continue
+		}
+		seenCoords[coordKey] = struct{}{}
+
+		const maxPages = 50
+		for pageIndex := 0; pageIndex < maxPages; pageIndex++ {
+			searchRequest := chrobinson.AvailableShipmentSearchRequest{
+				PageIndex:  pageIndex,
+				PageSize:   100,
+				RegionCode: "NA",
+				Modes:      []string{"F", "L", "R", "V", "H"},
+				OriginRadiusSearch: &chrobinson.RadiusSearch{
+					Coordinate: chrobinson.Coordinate{Lat: lat, Lon: lng},
+					Radius:     chrobinson.Radius{Value: radius, UnitOfMeasure: "Standard"},
+				},
+				AvailableForPickUpByDateRange: &chrobinson.DateRange{Min: fromDate, Max: toDate},
+				SortCriteria:                  &chrobinson.SortCriteria{Field: "LoadNumber", Direction: "ascending"},
+			}
+
+			var searchResponse *chrobinson.AvailableShipmentSearchResponse
+			err := chrobinson.HandleAPICall(client, func() error {
+				resp, err := client.SearchAvailableShipments(searchRequest)
+				if err != nil {
+					return err
+				}
+				searchResponse = resp
+				return nil
+			})
+			if err != nil {
+				log.WithError(err).WithFields(log.Fields{
+					"loadNumber": loadNumber, "lat": lat, "lng": lng, "pageIndex": pageIndex,
+				}).Warn("FindAndCacheLoad: search page failed; moving to next location")
+				break
+			}
+			if searchResponse == nil || len(searchResponse.Results) == 0 {
+				break
+			}
+
+			foundTarget := false
+			for _, shipment := range searchResponse.Results {
+				if shipment.LoadNumber > 0 && len(shipment.AvailableLoadCosts) > 0 {
+					chrobinson.CacheAvailableLoadCosts(shipment.LoadNumber, shipment.AvailableLoadCosts)
+				}
+				if shipment.LoadNumber > 0 {
+					chrobinson.CachePickupDefaults(shipment.LoadNumber, shipment.Origin, firstNonEmpty(shipment.CalculatedPickUpByDateTime, shipment.PickUpByDate, shipment.ReadyBy))
+				}
+				if shipment.LoadNumber == loadNumber {
+					foundTarget = true
+				}
+			}
+			if foundTarget {
+				log.WithFields(log.Fields{
+					"loadNumber": loadNumber, "lat": lat, "lng": lng, "pageIndex": pageIndex,
+				}).Info("FindAndCacheLoad: target load found and cached")
+				return true
+			}
+		}
+	}
+
+	log.WithField("loadNumber", loadNumber).Warn("FindAndCacheLoad: load not found in any location search")
+	return false
+}
+
 // SearchAndPostLocation runs a one-shot search around a single coordinate and
 // posts the results to the Loader using the exact same mapping and post pool as
 // the normal runner cycle. It exists so operators can push a specific region's
