@@ -2,10 +2,11 @@ package chrobinson
 
 import "sync"
 
-// Sized to hold the entire posted board (~1-2k loads per truck location) with
-// ample headroom, so book requests never miss on a load we sent to the Loader.
-// ~0.5-1KB per load => worst case ~10-20MB, still a hard bound on memory.
-const runtimeAvailableLoadCostsMaxItems = 20000
+// Sized to hold the entire posted board (~13k loads across all truck
+// locations as of 2026-07) with ample headroom, so book requests never miss on
+// a load we sent to the Loader. ~0.5-1KB per load => worst case ~25-50MB,
+// still a hard bound on memory.
+const runtimeAvailableLoadCostsMaxItems = 50000
 
 type availableLoadCostStore struct {
 	mu          sync.RWMutex
