@@ -304,7 +304,13 @@ func (client *APIClient) BookLoad(bookingRequest LoadBookingRequest) error {
 			log.WithError(errRead).Error("Failed to read response body")
 		}
 		log.Errorf("Failed to book load, status code: %d, response: %s", response.StatusCode, string(responseBody))
-		return fmt.Errorf("API request failed with status code %d: %s", response.StatusCode, string(responseBody))
+		// HTTPStatusError preserves CHRob's status and raw body so the handler
+		// can relay exactly what CHRob said (e.g. 423 "Book Locked") to callers.
+		return &HTTPStatusError{
+			StatusCode: response.StatusCode,
+			Operation:  "book load",
+			Body:       string(responseBody),
+		}
 	}
 
 	log.Info("Load booked successfully")

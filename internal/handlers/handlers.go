@@ -290,18 +290,12 @@ func BookLoadHandler(apiClient *chrobinson.APIClient) fiber.Handler {
 			return apiClient.BookLoad(bookingRequest)
 		})
 
-		// Handle errors from the API call or token handling.
+		// Handle errors from the API call or token handling. Relay CHRob's
+		// exact status/body so the Loader side sees what CHRob actually said.
 		if err != nil {
 			log.WithError(err).Error("Failed to book load")
-			// Determine the response status code based on the error type or content
-			if strings.Contains(err.Error(), "status code 400") {
-				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-					"error": "Bad request to API",
-				})
-			}
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-				"error": "Failed to process booking",
-			})
+			status, body := chrobBookErrorResponse(err, "Failed to process booking")
+			return c.Status(status).JSON(body)
 		}
 
 		loadCostsJSON, marshalErr := json.Marshal(bookingRequest.AvailableLoadCosts)
@@ -739,9 +733,8 @@ func MarkBookedHandler(apiClient *chrobinson.APIClient) fiber.Handler {
 		})
 		if err != nil {
 			log.WithError(err).Error("Failed to mark load booked")
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-				"error": "Failed to mark load booked",
-			})
+			status, body := chrobBookErrorResponse(err, "Failed to mark load booked")
+			return c.Status(status).JSON(body)
 		}
 
 		return c.Status(fiber.StatusAccepted).JSON(fiber.Map{

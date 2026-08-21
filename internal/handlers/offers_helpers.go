@@ -249,6 +249,33 @@ func sanitizeCHRobErrorDetail(err error) string {
 	return detail
 }
 
+// chrobBookErrorResponse mirrors chrobOfferSubmitErrorResponse for bookings:
+// relay CHRob's exact status and raw response body to the caller instead of a
+// generic 500, so downstream (Loader) logs show precisely what CHRob said
+// (e.g. 423 {"statusCode":423,"error":"Locked","message":"Book Locked"}).
+func chrobBookErrorResponse(err error, publicError string) (int, fiber.Map) {
+	status := chrobinson.ErrorStatusCode(err)
+	detail := sanitizeCHRobErrorDetail(err)
+
+	responseStatus := fiber.StatusInternalServerError
+	if status >= 400 && status <= 599 {
+		responseStatus = status
+	}
+
+	body := fiber.Map{
+		"error": publicError,
+	}
+	if status > 0 {
+		body["chrobStatus"] = status
+	}
+	if detail != "" {
+		body["details"] = detail
+	} else if msg := strings.TrimSpace(err.Error()); msg != "" {
+		body["details"] = msg
+	}
+	return responseStatus, body
+}
+
 func chrobOfferSubmitErrorResponse(err error) (int, fiber.Map) {
 	status := chrobinson.ErrorStatusCode(err)
 	detail := sanitizeCHRobErrorDetail(err)

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -975,3 +976,34 @@ func TestBookLoadHandler_BooksAtAcceptedPriceNotPostedPrice(t *testing.T) {
 		t.Fatalf("expected cost shape preserved, got %+v", cost)
 	}
 }
+
+// A CHRob booking failure must surface CHRob's exact status and body to the
+// caller (e.g. 423 "Book Locked"), not a generic 500.
+func TestChrobBookErrorResponse_RelaysCHRobStatusAndBody(t *testing.T) {
+	err := &chrobinson.HTTPStatusError{
+		StatusCode: 423,
+		Operation:  "book load",
+		Body:       `{"statusCode":423,"error":"Locked","message":"Book Locked"}`,
+	}
+	status, body := chrobBookErrorResponse(err, "Failed to process booking")
+	if status != 423 {
+		t.Fatalf("expected status 423 passed through, got %d", status)
+	}
+	if body["error"] != "Failed to process booking" {
+		t.Fatalf("unexpected public error: %v", body["error"])
+	}
+	if body["chrobStatus"] != 423 {
+		t.Fatalf("expected chrobStatus 423, got %v", body["chrobStatus"])
+	}
+	if body["details"] != `{"statusCode":423,"error":"Locked","message":"Book Locked"}` {
+		t.Fatalf("expected raw CHRob body in details, got %v", body["details"])
+	}
+
+	// Non-HTTP errors (network, marshal) keep the 500 with the error text.
+	status, body = chrobBookErrorResponse(errTestNetwork, "Failed to process booking")
+	if status != 500 || body["details"] == "" {
+		t.Fatalf("expected 500 with details for plain error, got %d %v", status, body)
+	}
+}
+
+var errTestNetwork = errors.New("dial tcp: connection refused")
