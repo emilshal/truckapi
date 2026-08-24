@@ -244,8 +244,12 @@ func BookLoadHandler(apiClient *chrobinson.APIClient) fiber.Handler {
 			}
 		}
 
+		// No carrier fallback: the carrier must be explicit via t_number. Silently
+		// defaulting to the env carrier would book the load under the wrong company.
 		if bookingRequest.CarrierCode == "" {
-			bookingRequest.CarrierCode = config.GetEnv(config.CHRobCarrierCode, "")
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": "t_number is required: no carrier (t_number) attached to the booking request",
+			})
 		}
 		if bookingRequest.LoadNumber == 0 {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
@@ -583,12 +587,16 @@ func SubmitLoadOfferHandler(apiClient *chrobinson.APIClient) fiber.Handler {
 		}
 		offerRequest := parsedInput.Request
 
+		// No carrier fallback: the carrier must be explicit via t_number. Silently
+		// defaulting to the env carrier would offer the load under the wrong company.
 		if offerRequest.CarrierCode == "" {
-			offerRequest.CarrierCode = config.GetEnv(config.CHRobCarrierCode, "")
-		}
-		if loadNumber == "" || offerRequest.CarrierCode == "" || offerRequest.OfferPrice <= 0 {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-				"error": "loadNumber, carrierCode, and offerPrice are required",
+				"error": "t_number is required: no carrier (t_number) attached to the offer request",
+			})
+		}
+		if loadNumber == "" || offerRequest.OfferPrice <= 0 {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": "loadNumber and offerPrice are required",
 			})
 		}
 
@@ -702,8 +710,12 @@ func MarkBookedHandler(apiClient *chrobinson.APIClient) fiber.Handler {
 				"error": "Invalid request data",
 			})
 		}
+		// No carrier fallback: the carrier must be explicit via t_number. Silently
+		// defaulting to the env carrier would book the load under the wrong company.
 		if bookingRequest.CarrierCode == "" {
-			bookingRequest.CarrierCode = config.GetEnv(config.CHRobCarrierCode, "")
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": "t_number is required: no carrier (t_number) attached to the booking request",
+			})
 		}
 		if bookingRequest.LoadNumber == 0 {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{

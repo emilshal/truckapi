@@ -888,7 +888,7 @@ func TestBookLoadHandler_UsesCachedAvailableLoadCosts(t *testing.T) {
 	}})
 
 	app := newOfferTestApp(client)
-	req := httptest.NewRequest(http.MethodPost, "/v1/shipments/books", bytes.NewBufferString(`{"loadNumber":546698145}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/shipments/books", bytes.NewBufferString(`{"loadNumber":546698145,"t_number":"T6263835"}`))
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := app.Test(req, 5000)
@@ -1007,3 +1007,47 @@ func TestChrobBookErrorResponse_RelaysCHRobStatusAndBody(t *testing.T) {
 }
 
 var errTestNetwork = errors.New("dial tcp: connection refused")
+
+// Bookings and offers with no carrier identifier must be rejected with a
+// clear error — never silently fall back to the env CHROB_CARRIER_CODE, which
+// would book/bid under the wrong company.
+func TestBookAndOffer_RejectMissingTNumber(t *testing.T) {
+	// Upstream must never be reached: the request is rejected before any CHRob call.
+	client, _ := newTestCHRobAPIClient(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("CHRob upstream must not be called when t_number is missing (path %s)", r.URL.Path)
+		w.WriteHeader(http.StatusAccepted)
+	})
+	app := newOfferTestApp(client)
+
+	book := httptest.NewRequest(http.MethodPost, "/v1/shipments/books",
+		bytes.NewBufferString(`{"load_number":"CHROB-546698145","order_bid_id":1}`))
+	book.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(book, 5000)
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusBadRequest {
+		t.Fatalf("book without t_number: expected 400, got %d", resp.StatusCode)
+	}
+	var body map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if msg, _ := body["error"].(string); !strings.Contains(msg, "t_number is required") {
+		t.Fatalf("book without t_number: expected t_number error, got %v", body)
+	}
+
+	offer := httptest.NewRequest(http.MethodPost, "/v1/shipments/546698145/offers",
+		bytes.NewBufferString(`{"offerPrice":500,"order_bid_id":1}`))
+	offer.Header.Set("Content-Type", "application/json")
+	resp, err = app.Test(offer, 5000)
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusBadRequest {
+		t.Fatalf("offer without t_number: expected 400, got %d", resp.StatusCode)
+	}
+	body = nil
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if msg, _ := body["error"].(string); !strings.Contains(msg, "t_number is required") {
+		t.Fatalf("offer without t_number: expected t_number error, got %v", body)
+	}
+}
