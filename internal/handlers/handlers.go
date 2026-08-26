@@ -199,6 +199,9 @@ func BookLoadHandler(apiClient *chrobinson.APIClient) fiber.Handler {
 			LoadNumberCamel json.RawMessage `json:"loadNumber"`
 			OrderBidID      json.Number     `json:"order_bid_id"`
 			OrderBidIDCamel json.Number     `json:"orderBidId"`
+			// Rate-confirmation recipient, sent by the Loader as communication_email.
+			CommunicationEmail      string `json:"communication_email"`
+			CommunicationEmailCamel string `json:"communicationEmail"`
 		}
 		_ = json.Unmarshal(c.Body(), &bookAliases)
 
@@ -249,6 +252,18 @@ func BookLoadHandler(apiClient *chrobinson.APIClient) fiber.Handler {
 		if bookingRequest.CarrierCode == "" {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 				"error": "t_number is required: no carrier (t_number) attached to the booking request",
+			})
+		}
+		// Rate-confirmation email must come from the caller (communication_email);
+		// never fall back to a static/env address — the rate con would go to the
+		// wrong person. A native rateConfirmation.email is honored if sent.
+		if strings.TrimSpace(bookingRequest.RateConfirmation.Email) == "" {
+			bookingRequest.RateConfirmation.Email = strings.TrimSpace(firstNonEmptyBooking(
+				bookAliases.CommunicationEmail, bookAliases.CommunicationEmailCamel))
+		}
+		if email := bookingRequest.RateConfirmation.Email; email == "" || !strings.Contains(email, "@") {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": "communication_email is required: no valid rate-confirmation email attached to the booking request",
 			})
 		}
 		if bookingRequest.LoadNumber == 0 {
@@ -325,6 +340,7 @@ func BookLoadHandler(apiClient *chrobinson.APIClient) fiber.Handler {
 			"loadNumber":              bookingRequest.LoadNumber,
 			"carrierCode":             bookingRequest.CarrierCode,
 			"t_number":                bookingRequest.CarrierCode,
+			"communication_email":     bookingRequest.RateConfirmation.Email,
 			"status":                  "accepted",
 			"persisted":               false,
 			"awaitingShipmentDetails": true,
@@ -930,8 +946,6 @@ func applyBookingDefaults(req *chrobinson.LoadBookingRequest) {
 		req.RateConfirmation.Name = firstNonEmptyBooking(
 			config.GetEnv("BOOKING_RATECON_NAME", ""), "HField Dispatch")
 	}
-	if strings.TrimSpace(req.RateConfirmation.Email) == "" {
-		req.RateConfirmation.Email = firstNonEmptyBooking(
-			config.GetEnv("BOOKING_RATECON_EMAIL", ""), "dispatch@hfield.net")
-	}
+	// No email default: the rate-confirmation email must be supplied by the
+	// caller (communication_email); BookLoadHandler rejects requests without it.
 }

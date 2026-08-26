@@ -469,7 +469,7 @@ func TestBookLoadHandler_DefaultsLogisticsFieldsFromPickupCache(t *testing.T) {
 
 	app := newOfferTestApp(client)
 	// Minimal body: only load/carrier/bid — no emptyLocation/emptyDateTime/rateConfirmation.
-	body := `{"load_number":"CHROB-202299001","t_number":"T6323830","order_bid_id":"13075604"}`
+	body := `{"load_number":"CHROB-202299001","t_number":"T6323830","order_bid_id":"13075604","communication_email":"grisha@hfield.net"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/shipments/books", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 
@@ -888,7 +888,7 @@ func TestBookLoadHandler_UsesCachedAvailableLoadCosts(t *testing.T) {
 	}})
 
 	app := newOfferTestApp(client)
-	req := httptest.NewRequest(http.MethodPost, "/v1/shipments/books", bytes.NewBufferString(`{"loadNumber":546698145,"t_number":"T6263835"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/shipments/books", bytes.NewBufferString(`{"loadNumber":546698145,"t_number":"T6263835","communication_email":"grisha@hfield.net"}`))
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := app.Test(req, 5000)
@@ -954,7 +954,7 @@ func TestBookLoadHandler_BooksAtAcceptedPriceNotPostedPrice(t *testing.T) {
 	}})
 
 	app := newOfferTestApp(client)
-	req := httptest.NewRequest(http.MethodPost, "/v1/shipments/books", bytes.NewBufferString(`{"loadNumber":202299777,"carrierCode":"T6323830"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/shipments/books", bytes.NewBufferString(`{"loadNumber":202299777,"carrierCode":"T6323830","communication_email":"grisha@hfield.net"}`))
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := app.Test(req, 5000)
@@ -1049,5 +1049,60 @@ func TestBookAndOffer_RejectMissingTNumber(t *testing.T) {
 	_ = json.NewDecoder(resp.Body).Decode(&body)
 	if msg, _ := body["error"].(string); !strings.Contains(msg, "t_number is required") {
 		t.Fatalf("offer without t_number: expected t_number error, got %v", body)
+	}
+}
+
+// The rate-confirmation email must come from the caller's communication_email;
+// a booking without one is rejected (no fallback to a static/env address), and
+// when present it is what goes to CHRob and is echoed back.
+func TestBookLoadHandler_CommunicationEmailRequiredAndUsed(t *testing.T) {
+	var upstream chrobinson.LoadBookingRequest
+	calls := 0
+	client, _ := newTestCHRobAPIClient(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		_ = json.NewDecoder(r.Body).Decode(&upstream)
+		w.WriteHeader(http.StatusAccepted)
+	})
+	chrobinson.CacheAvailableLoadCosts(546698146, []chrobinson.AvailableLoadCost{{
+		LoadNumber: 546698146, Type: "Flat", Code: "400", Description: "Line Haul",
+		SourceCostPerUnit: 900, Units: 1, CurrencyCode: "USD",
+	}})
+	app := newOfferTestApp(client)
+
+	// Missing email -> 400, upstream untouched.
+	req := httptest.NewRequest(http.MethodPost, "/v1/shipments/books",
+		bytes.NewBufferString(`{"load_number":"CHROB-546698146","t_number":"T777","order_bid_id":5}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req, 5000)
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	var body map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if resp.StatusCode != fiber.StatusBadRequest || !strings.Contains(body["error"].(string), "communication_email is required") {
+		t.Fatalf("expected 400 communication_email error, got %d %v", resp.StatusCode, body)
+	}
+	if calls != 0 {
+		t.Fatalf("upstream must not be called without an email")
+	}
+
+	// Present -> used as rateConfirmation.email and echoed.
+	req = httptest.NewRequest(http.MethodPost, "/v1/shipments/books",
+		bytes.NewBufferString(`{"load_number":"CHROB-546698146","t_number":"T777","order_bid_id":5,"communication_email":"dispatch@carrier.example"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = app.Test(req, 5000)
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	body = nil
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if resp.StatusCode != fiber.StatusAccepted {
+		t.Fatalf("expected 202, got %d %v", resp.StatusCode, body)
+	}
+	if upstream.RateConfirmation.Email != "dispatch@carrier.example" {
+		t.Fatalf("CHRob rateConfirmation.email = %q, want communication_email", upstream.RateConfirmation.Email)
+	}
+	if body["communication_email"] != "dispatch@carrier.example" {
+		t.Fatalf("response should echo communication_email, got %v", body)
 	}
 }
