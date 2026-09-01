@@ -564,7 +564,28 @@ func ShipmentDetailsHandler(c *fiber.Ctx) error {
 	// the load was booked outside this process or before a restart), we skip the
 	// forward rather than fail the callback — CHRob still gets its 200.
 	if loadNum, convErr := strconv.Atoi(shipmentDetails.LoadNumber.String()); convErr == nil {
-		if orderBidID, ok := runtimeStore.orderBidIDForLoad(loadNum); ok {
+		orderBidID, ok := runtimeStore.orderBidIDForLoad(loadNum)
+		if !ok && db.PlatformDB != nil {
+			// The in-memory booking record is lost on restart. Recover the
+			// order_bid_id from the platform DB and re-register the booking so
+			// the forward still happens and the milestone tracker picks it up.
+			if id, dbErr := db.OrderBidIDForLoadNumber(loadNum); dbErr == nil && id > 0 {
+				orderBidID, ok = id, true
+				runtimeStore.addBooking(chrobinson.LoadBookingRecord{
+					LoadNumber:  loadNum,
+					CarrierCode: shipmentDetails.CarrierCode,
+					OrderBidID:  id,
+					Status:      "accepted",
+				})
+				logrus.WithFields(logrus.Fields{
+					"loadNumber": loadNum,
+					"orderBidId": id,
+				}).Info("Recovered order_bid_id from platform DB for shipment details forward")
+			} else if dbErr != nil {
+				logrus.WithError(dbErr).WithField("loadNumber", loadNum).Warn("Platform DB order_bid_id lookup failed")
+			}
+		}
+		if ok {
 			loaderClient := loader.NewCoreAPIClientFromEnv(nil)
 			fwdErr := loaderClient.CreateShipmentDetailsForward(loader.ShipmentDetailsForward{
 				OrderBidID: orderBidID,

@@ -649,3 +649,26 @@ func TruckPositionByOrderBidID(orderBidID int) (*TruckPosition, error) {
 	}
 	return tp, nil
 }
+
+// OrderBidIDForLoadNumber resolves the Loader's order_bid_id for a CHRob load
+// from the platform DB (orders.order_number = "CHROB-<load>"). Used as a
+// restart-proof fallback when the in-memory booking record is gone. Prefers a
+// booked bid (status 3), then the most recent.
+func OrderBidIDForLoadNumber(loadNumber int) (int, error) {
+	if PlatformDB == nil {
+		return 0, fmt.Errorf("platform database is not initialized (set ENABLE_PLATFORM_DB=true)")
+	}
+	var id int
+	row := PlatformDB.Raw(`
+		SELECT ob.id
+		FROM order_bids ob
+		JOIN orders o ON o.id = ob.order_id
+		WHERE o.order_number = ?
+		ORDER BY (ob.status = 3) DESC, ob.id DESC
+		LIMIT 1
+	`, fmt.Sprintf("CHROB-%d", loadNumber)).Row()
+	if err := row.Scan(&id); err != nil {
+		return 0, fmt.Errorf("order_bid_id lookup for load %d: %w", loadNumber, err)
+	}
+	return id, nil
+}
