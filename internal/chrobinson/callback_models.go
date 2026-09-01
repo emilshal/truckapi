@@ -160,6 +160,7 @@ type LoadBookingRecord struct {
 	RateConfirmationEmail string    `json:"rateConfirmationEmail"`
 	AvailableLoadCosts    string    `gorm:"type:text" json:"availableLoadCosts"`
 	RawRequest            string    `gorm:"type:text" json:"rawRequest"`
+	InboundRequest        string    `gorm:"type:text" json:"inboundRequest,omitempty"`
 	CreatedAt             time.Time `json:"createdAt"`
 	UpdatedAt             time.Time `json:"updatedAt"`
 }

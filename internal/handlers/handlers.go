@@ -175,10 +175,13 @@ func CombinedShipmentInfoHandler(apiClient *chrobinson.APIClient) fiber.Handler 
 // BookLoadHandler creates a fiber.Handler that handles requests to book a load.
 func BookLoadHandler(apiClient *chrobinson.APIClient) fiber.Handler {
 	return func(c *fiber.Ctx) error {
+		inboundBody := append([]byte(nil), c.Body()...)
+		log.WithField("body", truncateForLog(inboundBody)).Info("Inbound booking request")
+
 		// Parse the JSON body into the LoadBookingRequest struct
 		var bookingRequest chrobinson.LoadBookingRequest
 		if err := c.BodyParser(&bookingRequest); err != nil {
-			log.WithError(err).Error("Failed to parse request body")
+			log.WithError(err).WithField("body", truncateForLog(inboundBody)).Error("Failed to parse request body")
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 				"error": "Invalid request data",
 			})
@@ -330,6 +333,7 @@ func BookLoadHandler(apiClient *chrobinson.APIClient) fiber.Handler {
 				RateConfirmationName:  bookingRequest.RateConfirmation.Name,
 				RateConfirmationEmail: bookingRequest.RateConfirmation.Email,
 				AvailableLoadCosts:    string(loadCostsJSON),
+				InboundRequest:        string(inboundBody),
 				RawRequest:            string(rawRequest),
 			})
 		}
@@ -593,9 +597,17 @@ func SubmitLoadOfferHandler(apiClient *chrobinson.APIClient) fiber.Handler {
 				"error": "loadNumber must be an integer",
 			})
 		}
-		parsedInput, err := validateAndBuildOfferRequest(c.Body())
+		inboundBody := append([]byte(nil), c.Body()...)
+		log.WithFields(log.Fields{
+			"loadNumber": loadNumber,
+			"body":       truncateForLog(inboundBody),
+		}).Info("Inbound offer request")
+		parsedInput, err := validateAndBuildOfferRequest(inboundBody)
 		if err != nil {
-			log.WithError(err).Error("Failed to parse offer request body")
+			log.WithError(err).WithFields(log.Fields{
+				"loadNumber": loadNumber,
+				"body":       truncateForLog(inboundBody),
+			}).Error("Failed to parse offer request body")
 			if fe, ok := err.(*fiber.Error); ok {
 				return c.Status(fe.Code).JSON(fiber.Map{"error": fe.Message})
 			}
@@ -948,4 +960,13 @@ func applyBookingDefaults(req *chrobinson.LoadBookingRequest) {
 	}
 	// No email default: the rate-confirmation email must be supplied by the
 	// caller (communication_email); BookLoadHandler rejects requests without it.
+}
+
+// truncateForLog bounds a raw request body for log output.
+func truncateForLog(b []byte) string {
+	const max = 4096
+	if len(b) > max {
+		return string(b[:max]) + "...(truncated)"
+	}
+	return string(b)
 }

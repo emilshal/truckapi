@@ -31,8 +31,16 @@ type offerRequestInput struct {
 	OfferNote         string `json:"offerNote"`
 	CurrencyCode      string `json:"currencyCode"`
 	AvailableLoadCost *int   `json:"availableLoadCost"`
-	OrderBidID        *int   `json:"order_bid_id"`
-	OrderBidIDCamel   *int   `json:"orderBidId"`
+	// order_bid_id accepts a number or a numeric string (the Loader sends both).
+	OrderBidID      json.Number `json:"order_bid_id"`
+	OrderBidIDCamel json.Number `json:"orderBidId"`
+	// Fields the Loader shares between its bid and book payloads. Accepted so a
+	// common payload shape doesn't trip the strict decoder; not used for offers
+	// (the load number comes from the URL).
+	CommunicationEmail      string          `json:"communication_email"`
+	CommunicationEmailCamel string          `json:"communicationEmail"`
+	LoadNumberSnake         json.RawMessage `json:"load_number"`
+	LoadNumberCamel         json.RawMessage `json:"loadNumber"`
 }
 
 type offerSubmitResponse struct {
@@ -187,7 +195,9 @@ type parsedOfferSubmitInput struct {
 func validateAndBuildOfferRequest(raw []byte) (parsedOfferSubmitInput, error) {
 	var input offerRequestInput
 	if err := decodeStrictJSON(raw, &input); err != nil {
-		return parsedOfferSubmitInput{}, fiber.NewError(fiber.StatusBadRequest, "Invalid request data")
+		// Relay the decoder's reason (e.g. unknown field "x", type mismatch) so
+		// the caller can see exactly which part of the payload we rejected.
+		return parsedOfferSubmitInput{}, fiber.NewError(fiber.StatusBadRequest, "Invalid request data: "+err.Error())
 	}
 
 	carrier, err := resolveCarrierAliases(input.TNumber, input.TNumberCamel, input.CarrierCode)
@@ -219,14 +229,20 @@ func validateAndBuildOfferRequest(raw []byte) (parsedOfferSubmitInput, error) {
 	}
 
 	orderBidID := 0
-	if input.OrderBidID != nil {
-		orderBidID = *input.OrderBidID
-	}
-	if input.OrderBidIDCamel != nil {
-		if orderBidID != 0 && orderBidID != *input.OrderBidIDCamel {
+	for _, raw := range []json.Number{input.OrderBidID, input.OrderBidIDCamel} {
+		if strings.TrimSpace(raw.String()) == "" {
+			continue
+		}
+		n, convErr := strconv.Atoi(strings.TrimSpace(raw.String()))
+		if convErr != nil {
+			return parsedOfferSubmitInput{}, fiber.NewError(fiber.StatusBadRequest, "order_bid_id must be an integer")
+		}
+		if orderBidID != 0 && n != 0 && orderBidID != n {
 			return parsedOfferSubmitInput{}, fiber.NewError(fiber.StatusBadRequest, "order_bid_id and orderBidId must match when both are provided")
 		}
-		orderBidID = *input.OrderBidIDCamel
+		if n != 0 {
+			orderBidID = n
+		}
 	}
 	if orderBidID < 0 {
 		return parsedOfferSubmitInput{}, fiber.NewError(fiber.StatusBadRequest, "order_bid_id must be greater than or equal to 0")

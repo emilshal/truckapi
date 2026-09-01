@@ -1106,3 +1106,40 @@ func TestBookLoadHandler_CommunicationEmailRequiredAndUsed(t *testing.T) {
 		t.Fatalf("response should echo communication_email, got %v", body)
 	}
 }
+
+// The Loader may share one payload shape between bid and book: communication_email,
+// load_number, and a string-typed order_bid_id must not trip the strict decoder.
+// Genuinely unknown fields are still rejected, now with the decoder's reason.
+func TestSubmitLoadOfferHandler_AcceptsSharedLoaderFields(t *testing.T) {
+	client, _ := newTestCHRobAPIClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"offerRequestId":"offer-req-shared"}`))
+	})
+	app := newOfferTestApp(client)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/shipments/566630989/offers",
+		bytes.NewBufferString(`{"t_number":"T100","offerPrice":500,"order_bid_id":"13728194","load_number":"CHROB-566630989","communication_email":"g@hfield.net"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req, 5000)
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	var body map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if resp.StatusCode != fiber.StatusAccepted {
+		t.Fatalf("expected 202, got %d %v", resp.StatusCode, body)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/v1/shipments/566630989/offers",
+		bytes.NewBufferString(`{"t_number":"T100","offerPrice":500,"bogus_field":1}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = app.Test(req, 5000)
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	body = nil
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if resp.StatusCode != fiber.StatusBadRequest || !strings.Contains(body["error"].(string), `unknown field "bogus_field"`) {
+		t.Fatalf("expected 400 naming the unknown field, got %d %v", resp.StatusCode, body)
+	}
+}
