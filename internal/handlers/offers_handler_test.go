@@ -1180,7 +1180,9 @@ func TestSubmitLoadOfferHandler_AcceptsStringOfferPrice(t *testing.T) {
 	}
 	body = nil
 	_ = json.NewDecoder(resp.Body).Decode(&body)
-	if resp.StatusCode != fiber.StatusBadRequest || !strings.Contains(body["error"].(string), "offerPrice") {
-		t.Fatalf("expected 400 naming offerPrice, got %d %v", resp.StatusCode, body)
+	// A non-numeric string fails at decode time; the decoder's reason names the
+	// offending literal ("abc") rather than the field, which is still actionable.
+	if resp.StatusCode != fiber.StatusBadRequest || !strings.Contains(body["error"].(string), "invalid number") {
+		t.Fatalf("expected 400 with decoder reason, got %d %v", resp.StatusCode, body)
 	}
 }
