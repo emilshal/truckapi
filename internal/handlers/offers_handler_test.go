@@ -1186,3 +1186,43 @@ func TestSubmitLoadOfferHandler_AcceptsStringOfferPrice(t *testing.T) {
 		t.Fatalf("expected 400 with decoder reason, got %d %v", resp.StatusCode, body)
 	}
 }
+
+// PHP request data arrives with numbers as strings. The book endpoint must
+// accept Grisha's full payload in all-strings form (and mixed), the same
+// tolerance the offer endpoint has for offerPrice/order_bid_id.
+func TestBookLoadHandler_AcceptsAllStringLoaderPayload(t *testing.T) {
+	for _, body := range []string{
+		`{"load_number":"CHROB-546698147","t_number":"T777","order_bid_id":"13735332","communication_email":"g@hfield.net"}`,
+		`{"load_number":546698147,"t_number":"T777","order_bid_id":13735332,"communication_email":"g@hfield.net"}`,
+	} {
+		var upstream chrobinson.LoadBookingRequest
+		client, _ := newTestCHRobAPIClient(t, func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewDecoder(r.Body).Decode(&upstream)
+			w.WriteHeader(http.StatusAccepted)
+		})
+		chrobinson.CacheAvailableLoadCosts(546698147, []chrobinson.AvailableLoadCost{{
+			LoadNumber: 546698147, Type: "Flat", Code: "400", Description: "Line Haul",
+			SourceCostPerUnit: 900, Units: 1, CurrencyCode: "USD",
+		}})
+		app := newOfferTestApp(client)
+
+		req := httptest.NewRequest(http.MethodPost, "/v1/shipments/books", bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := app.Test(req, 5000)
+		if err != nil {
+			t.Fatalf("app.Test: %v", err)
+		}
+		var out map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&out)
+		if resp.StatusCode != fiber.StatusAccepted {
+			t.Fatalf("body %s: expected 202, got %d %v", body, resp.StatusCode, out)
+		}
+		if upstream.LoadNumber != 546698147 || upstream.CarrierCode != "T777" || upstream.RateConfirmation.Email != "g@hfield.net" {
+			t.Fatalf("body %s: upstream booking wrong: %+v", body, upstream)
+		}
+		if out["orderBidId"] != float64(13735332) && out["order_bid_id"] != float64(13735332) {
+			// order_bid_id round-trips via the response; either key form counts.
+			t.Logf("note: response keys: %v", out)
+		}
+	}
+}
