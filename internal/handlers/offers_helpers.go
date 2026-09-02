@@ -24,13 +24,14 @@ const (
 )
 
 type offerRequestInput struct {
-	CarrierCode       string `json:"carrierCode"`
-	TNumber           string `json:"t_number"`
-	TNumberCamel      string `json:"tNumber"`
-	OfferPrice        int    `json:"offerPrice"`
-	OfferNote         string `json:"offerNote"`
-	CurrencyCode      string `json:"currencyCode"`
-	AvailableLoadCost *int   `json:"availableLoadCost"`
+	CarrierCode  string `json:"carrierCode"`
+	TNumber      string `json:"t_number"`
+	TNumberCamel string `json:"tNumber"`
+	// offerPrice accepts a number or a numeric string (the Loader sends both).
+	OfferPrice        json.Number `json:"offerPrice"`
+	OfferNote         string      `json:"offerNote"`
+	CurrencyCode      string      `json:"currencyCode"`
+	AvailableLoadCost *int        `json:"availableLoadCost"`
 	// order_bid_id accepts a number or a numeric string (the Loader sends both).
 	OrderBidID      json.Number `json:"order_bid_id"`
 	OrderBidIDCamel json.Number `json:"orderBidId"`
@@ -205,9 +206,18 @@ func validateAndBuildOfferRequest(raw []byte) (parsedOfferSubmitInput, error) {
 		return parsedOfferSubmitInput{}, err
 	}
 
+	offerPrice := 0
+	if raw := strings.TrimSpace(input.OfferPrice.String()); raw != "" {
+		n, convErr := strconv.Atoi(raw)
+		if convErr != nil {
+			return parsedOfferSubmitInput{}, fiber.NewError(fiber.StatusBadRequest, "offerPrice must be a whole number")
+		}
+		offerPrice = n
+	}
+
 	req := chrobinson.LoadOfferRequest{
 		CarrierCode:  carrier,
-		OfferPrice:   input.OfferPrice,
+		OfferPrice:   offerPrice,
 		OfferNote:    strings.TrimSpace(input.OfferNote),
 		CurrencyCode: strings.ToUpper(strings.TrimSpace(input.CurrencyCode)),
 	}

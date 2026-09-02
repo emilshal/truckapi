@@ -1143,3 +1143,44 @@ func TestSubmitLoadOfferHandler_AcceptsSharedLoaderFields(t *testing.T) {
 		t.Fatalf("expected 400 naming the unknown field, got %d %v", resp.StatusCode, body)
 	}
 }
+
+// offerPrice arrives from the Loader as a string ("550") — must parse like a number.
+func TestSubmitLoadOfferHandler_AcceptsStringOfferPrice(t *testing.T) {
+	var upstream chrobinson.LoadOfferRequest
+	client, _ := newTestCHRobAPIClient(t, func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&upstream)
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"offerRequestId":"offer-req-strprice"}`))
+	})
+	app := newOfferTestApp(client)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/shipments/566727455/offers",
+		bytes.NewBufferString(`{"offerPrice":"900","t_number":"T6263835","order_bid_id":13735332}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req, 5000)
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	var body map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if resp.StatusCode != fiber.StatusAccepted {
+		t.Fatalf("expected 202, got %d %v", resp.StatusCode, body)
+	}
+	if upstream.OfferPrice != 900 {
+		t.Fatalf("CHRob offerPrice = %d, want 900", upstream.OfferPrice)
+	}
+
+	// Non-numeric price still gets a clear rejection.
+	req = httptest.NewRequest(http.MethodPost, "/v1/shipments/566727455/offers",
+		bytes.NewBufferString(`{"offerPrice":"abc","t_number":"T6263835"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = app.Test(req, 5000)
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	body = nil
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if resp.StatusCode != fiber.StatusBadRequest || !strings.Contains(body["error"].(string), "offerPrice") {
+		t.Fatalf("expected 400 naming offerPrice, got %d %v", resp.StatusCode, body)
+	}
+}
